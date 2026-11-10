@@ -12,7 +12,7 @@ import time
 from collections.abc import Callable
 from dataclasses import replace
 
-from .mapdecode import MapDecodeError, MapFrame, decode_map
+from .mapdecode import MapDecodeError, MapFrame, decode_map, frame_trailer
 
 log = logging.getLogger(__name__)
 
@@ -21,6 +21,7 @@ LOOKBACK = 30 * 60  # s of history read when following starts (Chippy opened mid
 RUN_GAP = 120  # s without a frame that separate two cleans: older frames are dropped
 RESTART_GAP = 60  # s between polls after which following starts over
 HISTORY_LIMIT = 300
+CLEANSET_LOOKBACK_DAYS = 7
 
 History = Callable[[int, int], list[tuple[int, str]]]  # (start, end) -> [(time, value)]
 
@@ -42,6 +43,27 @@ def frames_in(value: str) -> list[MapFrame]:
         except MapDecodeError as err:
             log.debug("skipping a live frame: %s", err)
     return frames
+
+
+def latest_cleanset(
+    history: History, now: int, days: int = CLEANSET_LOOKBACK_DAYS
+) -> object | None:
+    """The per-room settings in the newest frame that carries them, or None."""
+    for _when, value in sorted(
+        history(now - days * 86400, now + 60), key=lambda r: r[0], reverse=True
+    ):
+        try:
+            items = json.loads(value)
+        except (json.JSONDecodeError, RecursionError):
+            items = [value]
+        if not isinstance(items, list):
+            items = [items]
+        for item in reversed(items):
+            if isinstance(item, str):
+                cleanset = frame_trailer(item).get("cleanset")
+                if cleanset is not None:
+                    return cleanset
+    return None
 
 
 class LiveTrack:

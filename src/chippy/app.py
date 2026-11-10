@@ -6,6 +6,7 @@ import logging
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import gi
@@ -27,7 +28,7 @@ from .core.fake import (  # noqa: E402
     build_fake_payload,
     fake_live_payload,
 )
-from .core.live import HISTORY_LIMIT, LIVE_PROPERTY, LiveTrack  # noqa: E402
+from .core.live import HISTORY_LIMIT, LIVE_PROPERTY, LiveTrack, latest_cleanset  # noqa: E402
 from .core.profiles import UnsupportedModel, profile_for  # noqa: E402
 from .dbus_service import VacuumDBus  # noqa: E402
 from .store import MapCache, RoomStore, Settings  # noqa: E402
@@ -286,6 +287,9 @@ class ChippyApp(Adw.Application):
                     return None
                 return fake_live_payload(vacuum.live_step, fake_map)
 
+            def fetch_cleanset():
+                return fake_map.cleanset
+
             rooms = RoomStore(legacy=Path(self._fake_root or "/nonexistent") / "no-legacy.json")
         else:
             vacuum = Vacuum.connect(creds.ip, creds.token, profile)
@@ -305,10 +309,24 @@ class ChippyApp(Adw.Application):
                     raise CloudSessionExpired()
                 return live_track.poll()
 
+            def fetch_cleanset():
+                return latest_cleanset(
+                    lambda start, end: cloud_map.property_history(
+                        creds.did, LIVE_PROPERTY, start, end, HISTORY_LIMIT
+                    ),
+                    int(time.time()),
+                )
+
             rooms = RoomStore()
         self.credentials, self.profile = creds, profile
         self.controller = VacuumController(
-            vacuum, profile, rooms, MapCache(), fetch, fetch_live_payload=fetch_live
+            vacuum,
+            profile,
+            rooms,
+            MapCache(),
+            fetch,
+            fetch_live_payload=fetch_live,
+            fetch_cleanset=fetch_cleanset,
         )
         self.controller.connect("notify-user", self._notify)
         self._dbus.attach(self.controller)

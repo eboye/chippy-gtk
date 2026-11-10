@@ -126,6 +126,7 @@ class VacuumController(GObject.Object):
         clock=time.monotonic,
         fetch_live_payload: Callable[[], MapFrame | bytes | None] | None = None,
         cloud_runner=None,
+        fetch_cleanset: Callable[[], object | None] | None = None,
     ):
         super().__init__()
         self._vacuum, self.profile = vacuum, profile
@@ -151,6 +152,7 @@ class VacuumController(GObject.Object):
         self._poke_pending = False
         # live position while cleaning: None disables it
         self._fetch_live = fetch_live_payload
+        self._fetch_cleanset = fetch_cleanset
         self.live: LiveState | None = None
         self._frame = None  # the saved map's frame: its geometry places live positions
         self._live_timer: int | None = None

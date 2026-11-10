@@ -119,7 +119,8 @@ def parse_path(tr: str) -> list[tuple[int, int]]:
     return points
 
 
-def decode_map(payload: bytes | str) -> MapFrame:
+def _split_frame(payload: bytes | str) -> tuple[tuple, bytes, bytes]:
+    """(header fields, pixels, trailer bytes) of a frame."""
     payload = _unwrap_saved_maps(payload)
     try:
         raw = _inflate(payload)
@@ -131,14 +132,15 @@ def decode_map(payload: bytes | str) -> MapFrame:
     width, height = fields[10], fields[11]
     if width < 0 or height < 0:
         raise MapDecodeError("map header has a negative size")
-    grid_mm, left, top = fields[9], fields[12], fields[13]
-    if grid_mm <= 0:
+    if fields[9] <= 0:
         raise MapDecodeError("map header has no grid size")
     end = HEADER.size + width * height
     if len(raw) < end:
         raise MapDecodeError("map pixels are truncated")
-    pixels = raw[HEADER.size : end]
-    trailer = raw[end:]
+    return fields, raw[HEADER.size : end], raw[end:]
+
+
+def _trailer_info(trailer: bytes) -> dict:
     if not trailer.strip():
         raise MapDecodeError("map has no room data")
     try:
@@ -147,6 +149,22 @@ def decode_map(payload: bytes | str) -> MapFrame:
         raise MapDecodeError(f"map room data is not JSON: {err}") from err
     if not isinstance(info, dict):
         raise MapDecodeError("map room data is not a JSON object")
+    return info
+
+
+def frame_trailer(payload: bytes | str) -> dict:
+    """The JSON object after a frame's pixels; {} when the frame can't be read."""
+    try:
+        return _trailer_info(_split_frame(payload)[2])
+    except MapDecodeError:
+        return {}
+
+
+def decode_map(payload: bytes | str) -> MapFrame:
+    fields, pixels, trailer = _split_frame(payload)
+    width, height = fields[10], fields[11]
+    grid_mm, left, top = fields[9], fields[12], fields[13]
+    info = _trailer_info(trailer)
     seg_inf = info.get("seg_inf") or {}
     if not isinstance(seg_inf, dict):
         raise MapDecodeError("map seg_inf is not a JSON object")

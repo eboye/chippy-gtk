@@ -3,12 +3,12 @@ import json
 import struct
 import zlib
 
-from chippy.core.live import RUN_GAP, LiveTrack, frames_in
+from chippy.core.live import RUN_GAP, LiveTrack, frames_in, latest_cleanset
 
 
-def _frame(robot, tr="", frame_id=1):
+def _frame(robot, tr="", frame_id=1, extra=None):
     header = struct.pack("<hhBhhhhhhhhhhh", 2, frame_id, 80, *robot, 0, 0, 0, 50, 0, 0, 0, 0)
-    trailer = json.dumps({"tr": tr, "fsm": 1}).encode()
+    trailer = json.dumps({"tr": tr, "fsm": 1, **(extra or {})}).encode()
     return base64.urlsafe_b64encode(zlib.compress(header + trailer)).decode().rstrip("=")
 
 
@@ -80,3 +80,21 @@ def test_a_long_pause_between_polls_starts_over():
     clock.now = 3000  # the next clean, much later
     history.rows += [(2999, _value(_frame((9, 9, 0), "S9,9")))]
     assert track.poll().path == [(9, 9)]
+
+
+def test_latest_cleanset_is_the_newest_frame_that_has_one():
+    history = _History()
+    history.rows += [
+        (100, _value(_frame((1, 1, 0), extra={"cleanset": {"1": [2, 1, 1]}}))),
+        (200, _value(_frame((1, 1, 0), extra={"cleanset": {"1": [3, 2, 2]}}))),
+        (300, _value(_frame((1, 1, 0)))),
+    ]
+    assert latest_cleanset(history, 400) == {"1": [3, 2, 2]}
+    assert history.calls == [(400 - 7 * 86400, 460)]
+
+
+def test_latest_cleanset_is_none_without_rows_or_cleanset():
+    history = _History()
+    assert latest_cleanset(history, 400) is None
+    history.rows += [(100, _value(_frame((1, 1, 0)), "not a frame"))]
+    assert latest_cleanset(history, 400) is None
