@@ -471,6 +471,11 @@ class VacuumController(GObject.Object):
 
     # map editing -----------------------------------------------------------
     @property
+    def current_frame(self) -> MapFrame | None:
+        """The saved map's decoded frame (zones, map id, geometry), None before the first."""
+        return self._frame
+
+    @property
     def can_edit(self) -> bool:
         return (
             self._frame is not None

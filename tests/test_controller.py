@@ -614,6 +614,14 @@ def test_can_edit_false_while_cleaning_or_before_map(parts):
     assert not ctl2.can_edit  # no map yet
 
 
+def test_current_frame_is_the_saved_map(parts):
+    ctl, _vac, _fm, _ev = edit_ctl(parts)
+    assert ctl.current_frame is not None
+    assert ctl.current_frame.zones == ctl._frame.zones
+    ctl2, _s, _e = make(parts)
+    assert ctl2.current_frame is None
+
+
 def test_begin_edit_defaults_without_cleanset(parts):
     ctl, _vac, _fm, _ev = edit_ctl(parts)
     out = []

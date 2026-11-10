@@ -9,6 +9,9 @@ gi.require_version("Graphene", "1.0")
 from gi.repository import Adw, GObject, Graphene, Gtk  # noqa: E402
 
 from .. import APP_ID  # noqa: E402
+from ..core.mapedit import MapZones  # noqa: E402
+from ..mapmodel import geometry_from_frame  # noqa: E402
+from .editpanel import EditPanel, confirm, mark_unsupported  # noqa: E402
 from .mapview import MapView  # noqa: E402
 from .sidebar import Sidebar  # noqa: E402
 
@@ -16,6 +19,24 @@ _BIDIRECTIONAL = GObject.BindingFlags.BIDIRECTIONAL | GObject.BindingFlags.SYNC_
 
 
 CLOUD_EXPIRED = "Xiaomi sign-in expired — map updates are paused"
+BROWSE_HINT = "Click rooms to select them · scroll to zoom · double-click to fit"
+# (tool, name, icon, hint) for the map toolbar in edit mode
+EDIT_TOOLS = (
+    (
+        "select",
+        "Select",
+        "edit-select-symbolic",
+        "Click a zone or wall to edit it · click a room for its settings",
+    ),
+    ("no_go", "No-go zone", "action-unavailable-symbolic", "Drag to draw a no-go zone"),
+    ("no_mop", "No-mop zone", "weather-showers-symbolic", "Drag to draw a no-mop zone"),
+    ("wall", "Wall", "list-remove-symbolic", "Drag to draw a virtual wall"),
+    ("order", "Order", "view-list-ordered-symbolic", "Click rooms in the order to clean them"),
+    ("split", "Split", "edit-cut-symbolic", "Click a room, then drag a line across it"),
+    ("merge", "Merge", "video-joined-displays-symbolic", "Click two neighbouring rooms"),
+)
+_TOOL_KIND = {"no_go": "zones", "no_mop": "zones", "wall": "zones", "order": "order"}
+STRUCTURAL_BODY = "This changes the robot's map right away."
 
 
 def live_subtitle(state: str) -> str:
@@ -38,6 +59,13 @@ class MainWindow(Adw.ApplicationWindow):
         self.selected: set[int] = set()
         self._ctl = None  # the controller whose signals this window listens to
         self._ctl_handlers: list[int] = []
+        # edit mode
+        self.editing = False
+        self._edit_generation = 0  # bumped on leaving: late callbacks of a left mode drop
+        self._merge_first = 0  # first room picked with the Merge tool
+        self._alert: Adw.AlertDialog | None = None  # merge / split confirmation
+        self._toggling = False  # setting the Edit toggle from code
+        self._could_edit = False
         self.toasts = Adw.ToastOverlay()
         self.stack = Adw.ViewStack()
         self.toasts.set_child(self.stack)
@@ -97,6 +125,12 @@ class MainWindow(Adw.ApplicationWindow):
         refresh = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Refresh map")
         refresh.set_action_name("app.refresh-map")
         map_header.pack_start(refresh)
+        self.edit_button = Gtk.ToggleButton(
+            icon_name="document-edit-symbolic", tooltip_text="Edit map", sensitive=False
+        )
+        self.edit_button.update_property([Gtk.AccessibleProperty.LABEL], ["Edit map"])
+        self.edit_button.connect("toggled", self._on_edit_toggled)
+        map_header.pack_start(self.edit_button)
         self.sidebar_toggle = Gtk.ToggleButton(
             icon_name="sidebar-show-right-symbolic", tooltip_text="Controls", visible=False
         )
@@ -109,6 +143,14 @@ class MainWindow(Adw.ApplicationWindow):
         )
         overlay = Gtk.Overlay(child=self.map_view, vexpand=True)
         overlay.add_overlay(self.map_status)
+        overlay.add_overlay(self._build_toolbar())
+        self.map_view.connect("zones-edited", lambda _v, zones: self.edit_panel.set_zones(zones))
+        self.map_view.connect(
+            "zone-selected",
+            lambda _v, kind, index: self.edit_panel.set_zone((kind, index) if index >= 0 else None),
+        )
+        self.map_view.connect("room-picked", lambda _v, seg: self._on_room_picked(seg))
+        self.map_view.connect("split-line", lambda _v, seg, line: self._confirm_split(seg, line))
         map_body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         map_body.append(self.cloud_banner)
         map_body.append(self.banner)
@@ -116,12 +158,16 @@ class MainWindow(Adw.ApplicationWindow):
         map_view = Adw.ToolbarView(content=map_body)
         map_view.add_top_bar(map_header)
         self.map_header = map_header
-        hint = Gtk.Label(
-            label="Click rooms to select them · scroll to zoom · double-click to fit",
+        self.hint = Gtk.Label(
+            label=BROWSE_HINT,
             css_classes=["caption", "dim-label"],
             margin_bottom=8,
+            margin_start=12,
+            margin_end=12,
+            wrap=True,
+            justify=Gtk.Justification.CENTER,
         )
-        map_view.add_bottom_bar(hint)
+        map_view.add_bottom_bar(self.hint)
 
         # sidebar side
         self.sidebar = Sidebar()
@@ -136,12 +182,23 @@ class MainWindow(Adw.ApplicationWindow):
         )
         menu.set_tooltip_text("Main menu")
         side_header.pack_end(menu)
+        # edit mode swaps the controls (and their bottom bar) for the edit panel
+        self.edit_panel = EditPanel()
+        self.edit_panel.connect("changed", lambda *_a: self._edit_changed())
+        self.edit_panel.connect("leave", lambda *_a: self._leave_edit())
+        self.edit_panel.connect("save", lambda *_a: self._save_edit())
+        self.side_stack = Gtk.Stack(vhomogeneous=False)
+        self.side_stack.add_named(self.sidebar, "controls")
+        self.side_stack.add_named(self.edit_panel, "edit")
+        self.side_actions = Gtk.Stack(vhomogeneous=False)
+        self.side_actions.add_named(self.sidebar.build_actions(), "controls")
+        self.side_actions.add_named(self.edit_panel.build_actions(), "edit")
         scroller = Gtk.ScrolledWindow(
-            child=self.sidebar, vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER
+            child=self.side_stack, vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER
         )
         side_view = Adw.ToolbarView(content=scroller)
         side_view.add_top_bar(side_header)
-        side_view.add_bottom_bar(self.sidebar.build_actions())
+        side_view.add_bottom_bar(self.side_actions)
 
         self.split = Adw.OverlaySplitView(
             content=map_view,
@@ -165,6 +222,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.stack.set_visible_child_name(state if state != "ready" else "main")
         ctl = self.app.controller if state == "ready" else None
         if ctl is not self._ctl:
+            if self.editing:
+                self._leave_edit()  # signed out or restarted: the session belongs to the old one
             self._disconnect_controller()
             self.selected = set()
             if ctl is not None:
@@ -212,9 +271,11 @@ class MainWindow(Adw.ApplicationWindow):
                 self.map_status.set_title("No map yet")
                 self.map_status.set_description(None)
                 self.map_status.set_visible(True)
+            self._show_zones()
         self._update_subtitle()  # also on snapshots: cleaning → returning changes the wording
-        self.map_view.set_selection(self.selected)
+        self.map_view.set_selection(self._map_selection())
         self.sidebar.update(ctl, self.selected)
+        self._update_edit_allowed()
         self.cloud_banner.set_revealed(ctl.cloud_expired)
         snap = ctl.snapshot
         if snap.state == "offline" and ctl.failures:
@@ -277,7 +338,294 @@ class MainWindow(Adw.ApplicationWindow):
         order = [r.id for r in self._ctl.visible_rooms() if r.id in self.selected]
         self._ctl.clean_rooms(order)
 
+    # edit mode -------------------------------------------------------------
+    def _build_toolbar(self) -> Gtk.Box:
+        self.toolbar = Gtk.Box(
+            css_classes=["linked"],
+            halign=Gtk.Align.START,
+            valign=Gtk.Align.START,
+            margin_top=12,
+            margin_start=12,
+            visible=False,
+        )
+        self.tool_buttons: dict[str, Gtk.ToggleButton] = {}
+        group = None
+        for tool, name, icon, _hint in EDIT_TOOLS:
+            button = Gtk.ToggleButton(icon_name=icon, tooltip_text=name, css_classes=["osd"])
+            button.update_property([Gtk.AccessibleProperty.LABEL], [name])
+            if group is None:
+                group = button
+            else:
+                button.set_group(group)
+            button.connect("toggled", self._on_tool_toggled, tool)
+            self.tool_buttons[tool] = button
+            self.toolbar.append(button)
+        return self.toolbar
+
+    def _set_toggle(self, active: bool) -> None:
+        self._toggling = True
+        try:
+            self.edit_button.set_active(active)
+        finally:
+            self._toggling = False
+
+    def _on_edit_toggled(self, button) -> None:
+        if self._toggling:
+            return
+        if button.get_active():
+            self._enter_edit()
+        elif self.editing:
+            # stay in edit mode until the panel says so (it asks when there are changes)
+            self._set_toggle(True)
+            self.edit_panel.cancel()
+
+    def _enter_edit(self) -> None:
+        ctl = self._ctl
+        if ctl is None or not ctl.can_edit:
+            self._set_toggle(False)
+            return
+        self.editing = True
+        self._set_toggle(True)
+        self.side_stack.set_visible_child_name("edit")
+        self.side_actions.set_visible_child_name("edit")
+        self.toolbar.set_visible(True)
+        for button in self.tool_buttons.values():
+            mark_unsupported(button, False)
+        self._choose_tool("select")
+        self._load_session()
+
+    def _load_session(self, keep_zones: MapZones | None = None, unsupported=()) -> None:
+        """Ask the controller for a session; `keep_zones` survive a merge or split."""
+        ctl, generation = self._ctl, self._edit_generation
+        self._set_busy(True)
+        self.edit_panel.begin()
+
+        def done(session, error) -> None:
+            if generation != self._edit_generation or ctl is not self._ctl:
+                return
+            self._set_busy(False)
+            if error is not None:
+                self.toast(f"Can't edit the map: {error}")
+                self._leave_edit()
+                return
+            edited = session.copy()
+            edited.unsupported |= set(unsupported)
+            self.edit_panel.set_session(session, edited, ctl.profile, keep_zones)
+            self.edit_panel.set_tool(self.map_view.tool)
+            self._apply_unsupported_tools()
+            self._edit_changed()
+
+        ctl.begin_edit(done)
+
+    def _leave_edit(self) -> None:
+        self._edit_generation += 1
+        self.editing = False
+        self._merge_first = 0
+        self._close_alerts()
+        self._set_busy(False)
+        self.edit_panel.set_saving(False)
+        self.edit_panel.begin()
+        self._set_toggle(False)
+        self.side_stack.set_visible_child_name("controls")
+        self.side_actions.set_visible_child_name("controls")
+        self.toolbar.set_visible(False)
+        self.map_view.set_tool(None)
+        self.map_view.set_sensitive(True)
+        self.hint.set_label(BROWSE_HINT)
+        self.refresh(map_too=True)
+
+    def _close_alerts(self) -> None:
+        for alert in (self._alert, self.edit_panel.alert):
+            if alert is not None:
+                alert.force_close()
+        self._alert = self.edit_panel.alert = None
+
+    def _set_busy(self, busy: bool) -> None:
+        """Loading a session, saving, merging or splitting: no tools, no map input."""
+        self.toolbar.set_sensitive(not busy)
+        self.map_view.set_sensitive(not busy)
+
+    def _choose_tool(self, tool: str) -> None:
+        button = self.tool_buttons[tool]
+        if button.get_active():
+            self._use_tool(tool)
+        else:
+            button.set_active(True)  # its "toggled" handler calls _use_tool
+
+    def _on_tool_toggled(self, button, tool) -> None:
+        if button.get_active() and self.editing:
+            self._use_tool(tool)
+
+    def _use_tool(self, tool: str) -> None:
+        self._merge_first = 0
+        self.map_view.set_tool(tool)
+        self.edit_panel.set_tool(tool)
+        self.edit_panel.set_zone(self.map_view.selected_zone)
+        self.hint.set_label(next(h for t, _n, _i, h in EDIT_TOOLS if t == tool))
+        self.map_view.set_selection(self._map_selection())
+
+    def _apply_unsupported_tools(self) -> None:
+        edited = self.edit_panel.edited
+        off = edited.unsupported if edited is not None else set()
+        for tool, kind in _TOOL_KIND.items():
+            mark_unsupported(self.tool_buttons[tool], kind in off)
+        if _TOOL_KIND.get(self.map_view.tool) in off:
+            self._choose_tool("select")
+
+    def _edit_changed(self) -> None:
+        """The staged session changed: redraw its zones and order on the map."""
+        self._show_zones()
+        self.map_view.set_selection(self._map_selection())
+
+    def _show_zones(self) -> None:
+        ctl = self._ctl
+        frame = ctl.current_frame if ctl is not None else None
+        geom = geometry_from_frame(frame) if frame is not None else None
+        edited = self.edit_panel.edited if self.editing else None
+        if edited is not None:
+            self.map_view.set_zones(edited.zones, geom)
+            self.map_view.set_order(edited.order)
+            self.edit_panel.set_zone(self.map_view.selected_zone)  # set_zones may clear it
+        else:
+            self.map_view.set_zones(frame.zones if frame is not None else MapZones(), geom)
+            self.map_view.set_order(None)
+
+    def _map_selection(self) -> set[int]:
+        """Rooms highlighted on the map: the room selection, or in edit mode the picked room."""
+        if not self.editing:
+            return self.selected
+        if self.map_view.tool == "merge":
+            return {self._merge_first} if self._merge_first else set()
+        return {self.edit_panel.room} if self.edit_panel.room else set()
+
+    def _update_edit_allowed(self) -> None:
+        """The Edit toggle follows `can_edit`; edit mode ends when the robot gets busy."""
+        can = self._ctl is not None and self._ctl.can_edit
+        self.edit_button.set_sensitive(can)
+        self.edit_panel.set_allowed(can)
+        if self.editing and self._could_edit and not can and not self.edit_panel.saving:
+            self.edit_panel.cancel()  # leaves at once, or asks first when there are changes
+        self._could_edit = can
+
+    def _room_name(self, seg: int) -> str:
+        edited = self.edit_panel.edited
+        name = edited.names.get(seg, "").strip() if edited is not None else ""
+        if not name and self._ctl is not None:
+            name = next((r.name for r in self._ctl.rooms if r.id == seg), "")
+        return name or f"Room {seg}"
+
+    def _on_room_picked(self, seg: int) -> None:
+        if not self.editing or self.edit_panel.edited is None:
+            return
+        if self.map_view.tool == "merge":
+            if not self._merge_first or self._merge_first == seg:
+                self._merge_first = 0 if self._merge_first == seg else seg
+            else:
+                self._confirm_merge(self._merge_first, seg)
+        else:
+            self.edit_panel.pick_room(seg)
+        self.map_view.set_selection(self._map_selection())
+
+    def _confirm_merge(self, a: int, b: int) -> None:
+        if self._alert is not None:
+            return
+        self._alert = confirm(
+            self,
+            f"Merge {self._room_name(a)} and {self._room_name(b)}?",
+            STRUCTURAL_BODY,
+            ("merge", "Merge"),
+            lambda: self._structural("merge", a, b),
+            on_close=self._alert_closed,
+        )
+
+    def _confirm_split(self, seg: int, line) -> None:
+        if not self.editing or self.edit_panel.edited is None or self._alert is not None:
+            return
+        self._alert = confirm(
+            self,
+            f"Split {self._room_name(seg)}?",
+            STRUCTURAL_BODY,
+            ("split", "Split"),
+            lambda: self._structural("split", seg, line),
+            on_close=self._alert_closed,
+        )
+
+    def _alert_closed(self) -> None:
+        self._alert = None
+        self._merge_first = 0
+        self.map_view.set_selection(self._map_selection())
+
+    def _structural(self, kind: str, *args) -> None:
+        """Merge or split on the robot now, then reload the session from the new map."""
+        ctl, generation, panel = self._ctl, self._edit_generation, self.edit_panel
+        if ctl is None or panel.edited is None:
+            return
+        original, edited = panel.original, panel.edited
+        self._set_busy(True)
+        panel.begin()
+
+        def done(error) -> None:
+            if generation != self._edit_generation or ctl is not self._ctl:
+                return
+            if error is not None:
+                self._set_busy(False)
+                self.toast(f"{kind.capitalize()} failed: {error}")
+                panel.set_session(original, edited, ctl.profile)
+                panel.set_tool(self.map_view.tool)
+                self._edit_changed()
+                return
+            self._load_session(keep_zones=edited.zones, unsupported=edited.unsupported)
+
+        if kind == "merge":
+            ctl.merge_rooms(edited.map_id, *args, done)
+        else:
+            ctl.split_room(edited.map_id, *args, done)
+
+    def _save_edit(self) -> None:
+        ctl, generation, panel = self._ctl, self._edit_generation, self.edit_panel
+        if ctl is None or panel.edited is None or not panel.dirty:
+            return
+        panel.set_saving(True)
+        self._set_busy(True)
+        self.edit_button.set_sensitive(False)
+
+        def done(error, _kind) -> None:
+            if generation != self._edit_generation or ctl is not self._ctl:
+                return
+            panel.set_saving(False)
+            self._set_busy(False)
+            if error is None:
+                self.toast("Saved to robot")
+                self._leave_edit()
+                return
+            self.toast(f"Saving failed: {error}")
+            panel.apply_unsupported()  # a refused kind is disabled and its changes dropped
+            self._apply_unsupported_tools()
+            self._edit_changed()
+            self._update_edit_allowed()
+
+        ctl.save_edit(panel.original, panel.edited, done)
+
     # test hook -------------------------------------------------------------
+    def _edit_test_state(self, centre, dialog) -> dict:
+        zones = self.map_view.zones
+        buttons = {tool: centre(button) for tool, button in self.tool_buttons.items()}
+        buttons["save"] = centre(self.edit_panel.save_button)
+        buttons["edit"] = centre(self.edit_button)
+        return {
+            "mode": self.editing,
+            "tool": self.map_view.tool,
+            "dirty": self.edit_panel.dirty,
+            "buttons": buttons,
+            "zones": {
+                "no_go": len(zones.no_go),
+                "no_mop": len(zones.no_mop),
+                "walls": len(zones.walls),
+            },
+            # an open confirmation (Discard / Merge / Split): Return accepts it
+            "alert": dialog.get_heading() if isinstance(dialog, Adw.AlertDialog) else None,
+        }
+
     def test_state(self) -> dict:
         native = self.get_native()
         sx, sy = native.get_surface_transform() if native else (0.0, 0.0)
@@ -326,6 +674,7 @@ class MainWindow(Adw.ApplicationWindow):
                 "sign_in": centre(self.sign_in_button),
                 "map": centre(self.map_view),
             },
+            "edit": self._edit_test_state(centre, dialog),
             "live_robot": (
                 list(self._ctl.live.robot)
                 if self._ctl and self._ctl.live and self._ctl.live.robot

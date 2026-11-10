@@ -237,8 +237,11 @@ class Sidebar(Gtk.Box):
                 self.suction_row.set_selected(SUCTION.index(snap.suction))
             if snap.water in WATER:
                 self.water_row.set_selected(WATER.index(snap.water))
-            self.suction_row.set_sensitive(usable)
-            self.water_row.set_sensitive(usable)
+            # with room settings on, the robot cleans each room at its own levels
+            per_room = snap.room_settings is True
+            for row in (self.suction_row, self.water_row):
+                row.set_subtitle("Per room" if per_room else "")
+                row.set_sensitive(usable and not per_room)
             self.water_row.set_visible(snap.has_water_tank)
             self.no_tank_row.set_visible(not snap.has_water_tank)
             visible = controller.visible_rooms()
