@@ -11,6 +11,7 @@ from gi.repository import GLib, GObject
 from miio.exceptions import DeviceException
 
 from .core.cloud import CloudSessionExpired
+from .core.device import DeviceError
 from .core.mapdecode import MapFrame, decode_map, saved_map_id
 from .core.mapedit import (
     DEFAULT_SETTING,
@@ -24,7 +25,14 @@ from .core.mapedit import (
 )
 from .core.notify import Notifier
 from .core.state import Snapshot
-from .mapmodel import LiveState, build_rooms, grid_from_frame, live_from_frame, tiny_rooms
+from .mapmodel import (
+    LiveState,
+    build_rooms,
+    grid_from_frame,
+    live_from_frame,
+    room_areas,
+    tiny_rooms,
+)
 
 log = logging.getLogger(__name__)
 
@@ -161,6 +169,7 @@ class VacuumController(GObject.Object):
         self._timer: int | None = None
         self._running = False
         self._stopped = False
+        self._pending_edits: set = set()  # fail-on-stop hooks of unfinished edit callbacks
         self._in_flight = False
         self._poke_pending = False
         # live position while cleaning: None disables it
@@ -192,6 +201,8 @@ class VacuumController(GObject.Object):
     def stop(self) -> None:
         self._running = False
         self._stopped = True
+        for fail in list(self._pending_edits):  # dropped jobs never call back: do it here
+            fail()
         if self._timer is not None:
             self._scheduler.cancel(self._timer)
             self._timer = None
@@ -472,6 +483,7 @@ class VacuumController(GObject.Object):
         if self._stopped:
             on_done(None, RuntimeError("Chippy has stopped"))
             return
+        on_done = self._once(on_done, None, RuntimeError("Chippy has stopped"))
         if not self.can_edit:
             on_done(None, RuntimeError("The map can't be edited right now"))
             return
@@ -483,6 +495,10 @@ class VacuumController(GObject.Object):
         def done(cleanset, error):
             if self._stopped:
                 on_done(None, RuntimeError("Chippy has stopped"))
+                return
+            if isinstance(error, CloudSessionExpired):
+                self._cloud_session_expired()
+                on_done(None, error)
                 return
             if error is not None:  # settings stay unknown; the rest can still be edited
                 log.warning("room settings unavailable: %s", error)
@@ -523,17 +539,13 @@ class VacuumController(GObject.Object):
         if self._stopped:
             on_done(RuntimeError("Chippy has stopped"), None)
             return
+        on_done = self._once(on_done, RuntimeError("Chippy has stopped"), None)
         steps = list(edited.changes(original, self.profile))
-        sent_names = {
-            seg
-            for seg, name in edited.names.items()
-            if name.strip() and name.strip() != original.names.get(seg)
-        }
 
         def finish(error: Exception | None, kind: str | None) -> None:
             def refreshed(_frame, _refresh_error) -> None:
                 if self._stopped:
-                    on_done(error or RuntimeError("Chippy has stopped"), kind)
+                    on_done(error or RuntimeError("Chippy has stopped"), None)
                     return
                 if error is None:
                     self.emit("edit-saved")
@@ -554,14 +566,15 @@ class VacuumController(GObject.Object):
 
             def done(_result, error) -> None:
                 if self._stopped:
-                    on_done(error or RuntimeError("Chippy has stopped"), step.kind)
+                    on_done(error or RuntimeError("Chippy has stopped"), None)
                     return
                 if error is not None:
-                    edited.unsupported.add(step.kind)
+                    if isinstance(error, DeviceError):  # the robot refused this kind of edit
+                        edited.unsupported.add(step.kind)
                     finish(error, step.kind)
                     return
                 if step.kind == "names":  # the robot's names show now
-                    for seg in sorted(sent_names):
+                    for seg in sorted(int(s) for s in step.payload["nsr"]):
                         self._room_store.rename(seg, "")
                     self._rebuild_rooms()
                 run_next()
@@ -583,16 +596,48 @@ class VacuumController(GObject.Object):
     ):
         """Split room `seg` along `line` on the robot; the new room gets "<name> 2"."""
 
+        # the robot may hold the name (saves clear the local copy): base the new names on the
+        # displayed one, and store only the new rooms' names
+        base = next((r.name for r in self.rooms if r.id == seg), None)
+
         def remap(new_ids) -> None:
-            self._room_store.replace_names(remap_after_split(self._room_store.names, seg, new_ids))
+            names = dict(self._room_store.names)
+            if base:
+                names[seg] = base
+            renamed = remap_after_split(names, seg, new_ids)
+            self._room_store.replace_names(
+                {**self._room_store.names, **{n: renamed[n] for n in new_ids if n in renamed}}
+            )
 
         self._structural_edit(split_payload(map_id, seg, line), remap, on_done)
+
+    def _frame_ids(self) -> set[int]:
+        """Room ids the map itself knows (grid cells, robot names), not local-only names."""
+        return (set(room_areas(self.grid)) if self.grid else set()) | set(self.cloud_names)
+
+    def _once(self, callback, *stopped_args):
+        """Wrap an edit callback: runs at most once, and stop() fires it with `stopped_args`."""
+        state = {"done": False}
+
+        def fire(*args):
+            if state["done"]:
+                return
+            state["done"] = True
+            self._pending_edits.discard(fail)
+            callback(*args)
+
+        def fail():
+            fire(*stopped_args)
+
+        self._pending_edits.add(fail)
+        return fire
 
     def _structural_edit(self, payload: dict, remap, on_done) -> None:
         if self._stopped:
             on_done(RuntimeError("Chippy has stopped"))
             return
-        before = {r.id for r in self.rooms}
+        on_done = self._once(on_done, RuntimeError("Chippy has stopped"))
+        before = self._frame_ids()
 
         def sent(_result, error) -> None:
             if self._stopped:
@@ -606,7 +651,7 @@ class VacuumController(GObject.Object):
                 if refresh_error is not None:
                     on_done(refresh_error)
                     return
-                remap({r.id for r in self.rooms} - before)
+                remap(self._frame_ids() - before)
                 self._rebuild_rooms()
                 on_done(None)
                 self.poke()

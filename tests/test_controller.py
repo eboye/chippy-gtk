@@ -1,9 +1,10 @@
-import functools
+import json
 
 import pytest
 from gi.repository import GLib
 
 from chippy.controller import OFFLINE_ERROR, ThreadRunner, VacuumController, next_interval
+from chippy.core.cloud import CloudSessionExpired
 from chippy.core.device import DeviceError
 from chippy.core.fake import FakeMap, FakeVacuum, _cell_mm, build_fake_payload
 from chippy.core.mapedit import Line, MapZones, Rect
@@ -583,14 +584,20 @@ def test_process_with_a_stuck_runner_job_exits_promptly():
     assert done.stdout.strip() == "exiting"
 
 
-def edit_ctl(parts, cleanset=None, **kw):
+def with_map_id(payload, map_id):
+    doc = json.loads(payload)
+    doc["curr_id"] = map_id
+    return json.dumps(doc).encode()
+
+
+def edit_ctl(parts, cleanset=None, map_id=7, fetch_cleanset=None, **kw):
     fm = FakeMap()
     vac = FakeVacuum(fake_map=fm)
     ctl, sched, events = make(
         parts,
         vacuum=vac,
-        fetch=functools.partial(build_fake_payload, fake_map=fm),
-        fetch_cleanset=(lambda: cleanset),
+        fetch=lambda: with_map_id(build_fake_payload(fake_map=fm), map_id),
+        fetch_cleanset=fetch_cleanset or (lambda: cleanset),
         **kw,
     )
     ctl.start()
@@ -618,7 +625,7 @@ def test_begin_edit_defaults_without_cleanset(parts):
     assert set(session.settings) == {1, 2, 3, 4}
     assert session.names[1] == "Living room"
     assert session.use_room_settings is False
-    assert session.map_id == ctl._map_id
+    assert session.map_id == 7
 
 
 def test_begin_edit_uses_cleanset(parts):
@@ -693,7 +700,6 @@ def test_merge_rooms_drops_merged_name(parts):
 
 def test_split_room_names_new_room(parts):
     ctl, vac, fm, _ev = edit_ctl(parts)
-    parts["rooms"].rename(1, "Lounge")
     ids_before = {r.id for r in ctl.rooms}
     seg1_cells = [
         (c, r) for r, row in enumerate(fm.layout) for c, ch in enumerate(row) if ch == "1"
@@ -708,7 +714,7 @@ def test_split_room_names_new_room(parts):
     assert done == [None]
     new_ids = {r.id for r in ctl.rooms} - ids_before
     assert len(new_ids) == 1
-    assert parts["rooms"].names[new_ids.pop()] == "Lounge 2"
+    assert parts["rooms"].names == {new_ids.pop(): "Living room 2"}  # from the robot's name
 
 
 def test_merge_refresh_failure_reports_error(parts):
@@ -746,3 +752,74 @@ def test_edit_callbacks_after_stop(parts):
     assert isinstance(got[0][1], RuntimeError)  # begin_edit: (session, error)
     assert isinstance(got[1][0], RuntimeError)  # save_edit: (error, kind)
     assert isinstance(got[2], RuntimeError) and isinstance(got[3], RuntimeError)
+
+
+def test_transport_error_stops_save_but_is_not_unsupported(parts):
+    ctl, vac, _fm, _ev = edit_ctl(parts)
+
+    def broken(payload):
+        raise TimeoutError("timed out")
+
+    vac.update_map = broken
+    out = []
+    ctl.begin_edit(lambda s, e: out.append(s))
+    edited = out[0].copy()
+    edited.names[1] = "Salon"
+    done = []
+    ctl.save_edit(out[0], edited, lambda err, kind: done.append((err, kind)))
+    assert isinstance(done[0][0], TimeoutError) and done[0][1] == "names"
+    assert edited.unsupported == set()
+
+
+def test_begin_edit_cleanset_session_expired(parts):
+    def expired():
+        raise CloudSessionExpired()
+
+    ctl, _vac, _fm, _ev = edit_ctl(parts, fetch_cleanset=expired)
+    out = []
+    ctl.begin_edit(lambda s, e: out.append((s, e)))
+    assert out[0][0] is None and isinstance(out[0][1], CloudSessionExpired)
+    assert ctl.cloud_expired
+
+
+class HoldingRunner:
+    """Queues jobs without running them, like a pool whose queue stop() drops."""
+
+    def __init__(self):
+        self.jobs = []
+
+    def run(self, func, callback):
+        self.jobs.append((func, callback))
+
+    def shutdown(self):
+        self.jobs.clear()
+
+
+def test_stop_with_save_in_flight_calls_back_once(parts):
+    ctl, _vac, _fm, _ev = edit_ctl(parts)
+    out = []
+    ctl.begin_edit(lambda s, e: out.append(s))
+    edited = out[0].copy()
+    edited.names[1] = "Salon"
+    holder = HoldingRunner()
+    ctl._runner = holder
+    done = []
+    ctl.save_edit(out[0], edited, lambda err, kind: done.append((err, kind)))
+    assert holder.jobs and not done
+    func, callback = holder.jobs[0]
+    ctl.stop()
+    assert len(done) == 1 and str(done[0][0]) == "Chippy has stopped" and done[0][1] is None
+    callback(func(), None)  # a late delivery is ignored
+    assert len(done) == 1
+
+
+def test_stop_with_begin_and_merge_in_flight_calls_back_once(parts):
+    ctl, _vac, _fm, _ev = edit_ctl(parts)
+    holder = HoldingRunner()
+    ctl._runner = ctl._cloud_runner = holder
+    begun, merged = [], []
+    ctl.begin_edit(lambda s, e: begun.append((s, e)))
+    ctl.merge_rooms(7, 1, 2, merged.append)
+    ctl.stop()
+    assert len(begun) == 1 and begun[0][0] is None
+    assert len(merged) == 1 and str(merged[0]) == "Chippy has stopped"
