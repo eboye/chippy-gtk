@@ -107,3 +107,12 @@ def test_hidden_rejects_json_booleans(tmp_path):
     path = tmp_path / "rooms.json"
     path.write_text(json.dumps({"hidden": [True, 3], "imported": True}))
     assert RoomStore(path, legacy=tmp_path / "missing.json").hidden == {3}
+
+
+def test_replace_names_sets_and_persists(tmp_path):
+    path = tmp_path / "rooms.json"
+    store = RoomStore(path, legacy=tmp_path / "none.json")
+    store.rename(1, "Old")
+    store.replace_names({2: " Kitchen ", 3: ""})
+    assert store.names == {2: "Kitchen"}
+    assert RoomStore(path, legacy=tmp_path / "none.json").names == {2: "Kitchen"}

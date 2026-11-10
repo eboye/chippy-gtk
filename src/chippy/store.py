@@ -108,6 +108,10 @@ class RoomStore:
             self.names.pop(seg_id, None)
         self._save()
 
+    def replace_names(self, names: dict[int, str]) -> None:
+        self.names = {seg: n.strip() for seg, n in names.items() if n.strip()}
+        self._save()
+
     def set_hidden(self, seg_id: int, hidden: bool) -> None:
         (self.hidden.add if hidden else self.hidden.discard)(seg_id)
         self._save()

@@ -11,7 +11,17 @@ from gi.repository import GLib, GObject
 from miio.exceptions import DeviceException
 
 from .core.cloud import CloudSessionExpired
-from .core.mapdecode import MapFrame, decode_map
+from .core.mapdecode import MapFrame, decode_map, saved_map_id
+from .core.mapedit import (
+    DEFAULT_SETTING,
+    EditSession,
+    Line,
+    merge_payload,
+    parse_cleanset,
+    remap_after_merge,
+    remap_after_split,
+    split_payload,
+)
 from .core.notify import Notifier
 from .core.state import Snapshot
 from .mapmodel import LiveState, build_rooms, grid_from_frame, live_from_frame, tiny_rooms
@@ -25,6 +35,7 @@ _ACTIVE = {"cleaning", "returning"}
 LIVE_INTERVAL = 5  # s between live position requests while cleaning or returning
 LIVE_BACKOFF = 30  # s between requests after LIVE_EMPTY_LIMIT empty answers in a row
 LIVE_EMPTY_LIMIT = 3
+_NO_EDIT_STATES = {"cleaning", "returning", "paused", "offline"}
 _TRANSPORT_ERRORS = (DeviceException, OSError, TimeoutError)
 
 
@@ -112,6 +123,8 @@ class VacuumController(GObject.Object):
         "notify-user": (GObject.SignalFlags.RUN_FIRST, None, (str, str)),
         # the saved Xiaomi session was refused: map and live fetches stop until a new sign-in
         "cloud-expired": (GObject.SignalFlags.RUN_FIRST, None, ()),
+        # every step of a map edit reached the robot
+        "edit-saved": (GObject.SignalFlags.RUN_FIRST, None, ()),
     }
 
     def __init__(
@@ -154,6 +167,7 @@ class VacuumController(GObject.Object):
         self._fetch_live = fetch_live_payload
         self._fetch_cleanset = fetch_cleanset
         self.live: LiveState | None = None
+        self._map_id = 0  # the saved map's id, the target of every map edit
         self._frame = None  # the saved map's frame: its geometry places live positions
         self._live_timer: int | None = None
         self._live_running = False  # timer armed or a request in flight
@@ -167,6 +181,7 @@ class VacuumController(GObject.Object):
         if cached:
             try:
                 self._set_frame(decode_map(cached))
+                self._remember_map_id(cached)
             except Exception as err:  # noqa: BLE001 - a bad cache is just ignored
                 log.warning("cached map unreadable: %s", err)
         self._rebuild_rooms()
@@ -344,32 +359,60 @@ class VacuumController(GObject.Object):
         self._arm_live(LIVE_BACKOFF if backoff else LIVE_INTERVAL)
 
     # map and rooms ---------------------------------------------------------
-    def refresh_map(self) -> None:
-        if self._stopped or self.cloud_expired:
+    def _remember_map_id(self, payload) -> None:
+        try:
+            self._map_id = saved_map_id(payload)
+        except Exception as err:  # noqa: BLE001 - keep the previous id
+            log.warning("map id unreadable: %s", err)
+
+    def refresh_map(
+        self, on_result: Callable[[MapFrame | None, Exception | None], None] | None = None
+    ) -> None:
+        """Fetch the saved map; `on_result(frame, error)` (optional) is called exactly once."""
+
+        def skip(error: Exception) -> None:
+            if on_result is not None:
+                on_result(None, error)
+
+        if self._stopped:
+            skip(RuntimeError("Chippy has stopped"))
+            return
+        if self.cloud_expired:
+            skip(CloudSessionExpired())
             return
         if self.profile.map_format != "plain":
             self.emit("map-failed", ENCRYPTED_MAP)
+            skip(RuntimeError(ENCRYPTED_MAP))
             return
 
         def work():
             payload = self._fetch()
             return payload, decode_map(payload)
 
-        self._cloud_runner.run(work, self._on_map)
+        self._cloud_runner.run(work, lambda result, error: self._on_map(result, error, on_result))
 
-    def _on_map(self, result, error) -> None:
+    def _on_map(self, result, error, on_result=None) -> None:
         if self._stopped:
+            if on_result is not None:
+                on_result(None, error or RuntimeError("Chippy has stopped"))
             return
         if isinstance(error, CloudSessionExpired):
             self._cloud_session_expired()
+            if on_result is not None:
+                on_result(None, error)
             return
         if error is not None:
             log.warning("map refresh failed: %s", error)
             self.emit("map-failed", str(error))
+            if on_result is not None:
+                on_result(None, error)
             return
         payload, frame = result
         self._map_cache.save(payload)
+        self._remember_map_id(payload)
         self._set_frame(frame)
+        if on_result is not None:
+            on_result(frame, None)
 
     def _cloud_session_expired(self) -> None:
         """Stop every cloud fetch (polling the robot goes on) and tell the user once."""
@@ -414,3 +457,160 @@ class VacuumController(GObject.Object):
     def set_room_hidden(self, seg_id: int, hidden: bool) -> None:
         self._room_store.set_hidden(seg_id, hidden)
         self._rebuild_rooms()
+
+    # map editing -----------------------------------------------------------
+    @property
+    def can_edit(self) -> bool:
+        return (
+            self._frame is not None
+            and not self.cloud_expired
+            and self.snapshot.state not in _NO_EDIT_STATES
+        )
+
+    def begin_edit(self, on_done: Callable[[EditSession | None, Exception | None], None]) -> None:
+        """Snapshot the map and the robot's room settings into an EditSession."""
+        if self._stopped:
+            on_done(None, RuntimeError("Chippy has stopped"))
+            return
+        if not self.can_edit:
+            on_done(None, RuntimeError("The map can't be edited right now"))
+            return
+        fetch = self._fetch_cleanset
+
+        def work():
+            return fetch() if fetch is not None else None
+
+        def done(cleanset, error):
+            if self._stopped:
+                on_done(None, RuntimeError("Chippy has stopped"))
+                return
+            if error is not None:  # settings stay unknown; the rest can still be edited
+                log.warning("room settings unavailable: %s", error)
+                cleanset = None
+            visible = [r.id for r in self.rooms if not r.hidden]
+            parsed = parse_cleanset(cleanset, self.profile) if cleanset is not None else None
+            if parsed is not None:
+                settings, order = parsed
+                settings = {seg: settings.get(seg, DEFAULT_SETTING) for seg in visible}
+                order = [seg for seg in order if seg in settings] + [
+                    seg for seg in visible if seg not in order
+                ]
+            else:
+                settings = {seg: DEFAULT_SETTING for seg in visible}
+                order = sorted(visible)
+            on_done(
+                EditSession(
+                    map_id=self._map_id,
+                    zones=self._frame.zones,
+                    names={r.id: r.name for r in self.rooms if not r.hidden},
+                    settings=settings,
+                    order=order,
+                    use_room_settings=bool(self.snapshot.room_settings),
+                    settings_known=parsed is not None,
+                ),
+                None,
+            )
+
+        self._cloud_runner.run(work, done)
+
+    def save_edit(
+        self,
+        original: EditSession,
+        edited: EditSession,
+        on_done: Callable[[Exception | None, str | None], None],
+    ) -> None:
+        """Send the changes to the robot one step at a time, stopping at the first failure."""
+        if self._stopped:
+            on_done(RuntimeError("Chippy has stopped"), None)
+            return
+        steps = list(edited.changes(original, self.profile))
+        sent_names = {
+            seg
+            for seg, name in edited.names.items()
+            if name.strip() and name.strip() != original.names.get(seg)
+        }
+
+        def finish(error: Exception | None, kind: str | None) -> None:
+            def refreshed(_frame, _refresh_error) -> None:
+                if self._stopped:
+                    on_done(error or RuntimeError("Chippy has stopped"), kind)
+                    return
+                if error is None:
+                    self.emit("edit-saved")
+                on_done(error, kind)
+
+            self.refresh_map(refreshed)
+            self.poke()
+
+        def run_next() -> None:
+            if not steps:
+                finish(None, None)
+                return
+            step = steps.pop(0)
+            if step.kind == "room_settings":
+                work = lambda: self._vacuum.set_room_settings_enabled(step.value)  # noqa: E731
+            else:
+                work = lambda: self._vacuum.update_map(step.payload)  # noqa: E731
+
+            def done(_result, error) -> None:
+                if self._stopped:
+                    on_done(error or RuntimeError("Chippy has stopped"), step.kind)
+                    return
+                if error is not None:
+                    edited.unsupported.add(step.kind)
+                    finish(error, step.kind)
+                    return
+                if step.kind == "names":  # the robot's names show now
+                    for seg in sorted(sent_names):
+                        self._room_store.rename(seg, "")
+                    self._rebuild_rooms()
+                run_next()
+
+            self._runner.run(work, done)
+
+        run_next()
+
+    def merge_rooms(self, map_id: int, a: int, b: int, on_done: Callable[[Exception | None], None]):
+        """Merge room `b` into `a` on the robot, then keep Chippy's local names in step."""
+
+        def remap(_new_ids) -> None:
+            self._room_store.replace_names(remap_after_merge(self._room_store.names, a, b))
+
+        self._structural_edit(merge_payload(map_id, a, b), remap, on_done)
+
+    def split_room(
+        self, map_id: int, seg: int, line: Line, on_done: Callable[[Exception | None], None]
+    ):
+        """Split room `seg` along `line` on the robot; the new room gets "<name> 2"."""
+
+        def remap(new_ids) -> None:
+            self._room_store.replace_names(remap_after_split(self._room_store.names, seg, new_ids))
+
+        self._structural_edit(split_payload(map_id, seg, line), remap, on_done)
+
+    def _structural_edit(self, payload: dict, remap, on_done) -> None:
+        if self._stopped:
+            on_done(RuntimeError("Chippy has stopped"))
+            return
+        before = {r.id for r in self.rooms}
+
+        def sent(_result, error) -> None:
+            if self._stopped:
+                on_done(error or RuntimeError("Chippy has stopped"))
+                return
+            if error is not None:
+                on_done(error)
+                return
+
+            def refreshed(frame, refresh_error) -> None:
+                if refresh_error is not None:
+                    on_done(refresh_error)
+                    return
+                remap({r.id for r in self.rooms} - before)
+                self._rebuild_rooms()
+                on_done(None)
+                self.poke()
+
+            self.refresh_map(refreshed)
+
+        self._runner.run(lambda: self._vacuum.update_map(payload), sent)
