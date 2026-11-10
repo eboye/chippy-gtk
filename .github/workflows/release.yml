@@ -166,6 +166,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+      - name: Release notes
+        run: python3 packaging/build.py release-notes "${{ needs.check.outputs.version }}" > release-notes.md
       - uses: actions/download-artifact@v8
         with:
           path: dist
@@ -178,6 +181,8 @@ jobs:
       - uses: softprops/action-gh-release@v3
         with:
           name: Chippy ${{ needs.check.outputs.version }}
+          body_path: release-notes.md
+          # GitHub appends the list of changes since the previous release.
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |

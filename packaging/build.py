@@ -7,7 +7,12 @@
         Needs Python 3 with pip and network access.
 
     packaging/build.py check-version [TAG]
-        Check that the app, pyproject.toml, the metainfo and the release tag (vX.Y.Z) agree.
+        Check that the app, pyproject.toml, the metainfo and the release tag (vX.Y.Z) agree,
+        and that the release has notes.
+
+    packaging/build.py release-notes [VERSION]
+        Print the GitHub release notes: packaging/release-notes.md filled in with the
+        release's <description> from the metainfo file.
 
     packaging/build.py package STAGE_DIR TARGET OUT_DIR
         Pack STAGE_DIR into OUT_DIR for TARGET (debian, fedora, opensuse or arch), with that
@@ -23,7 +28,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
+from string import Template
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_ID = "io.github.eboye.Chippy"
@@ -258,7 +265,47 @@ def check_version(tag: str | None) -> int:
     if len(set(found.values())) != 1:
         print("versions disagree", file=sys.stderr)
         return 1
+    try:
+        release_notes(version())
+    except ValueError as err:
+        print(err, file=sys.stderr)
+        return 1
     return 0
+
+
+def _inline(element: ET.Element) -> str:
+    """AppStream inline markup (<em>, <code>) as Markdown, whitespace collapsed."""
+    parts = [element.text or ""]
+    for child in element:
+        mark = {"em": "*", "code": "`"}.get(child.tag, "")
+        parts.append(f"{mark}{_inline(child)}{mark}{child.tail or ''}")
+    return " ".join("".join(parts).split())
+
+
+def highlights(ver: str) -> str:
+    """The <description> of release `ver` in the metainfo file, as Markdown."""
+    root = ET.parse(ROOT / f"data/{APP_ID}.metainfo.xml").getroot()
+    release = root.find(f"releases/release[@version='{ver}']")
+    description = release.find("description") if release is not None else None
+    if description is None or not len(description):
+        raise ValueError(
+            f'data/{APP_ID}.metainfo.xml needs a <release version="{ver}"> with a '
+            "<description>: it becomes the release notes"
+        )
+    blocks = []
+    for block in description:
+        if block.tag == "p":
+            blocks.append(_inline(block))
+        elif block.tag in ("ul", "ol"):
+            bullet = "-" if block.tag == "ul" else "1."
+            blocks.append("\n".join(f"{bullet} {_inline(li)}" for li in block.iter("li")))
+    return "\n\n".join(blocks)
+
+
+def release_notes(ver: str) -> str:
+    template = (ROOT / "packaging/release-notes.md").read_text()
+    template = re.sub(r"\A<!--.*?-->\n", "", template, flags=re.S)  # the note for maintainers
+    return Template(template).substitute(version=ver, highlights=highlights(ver))
 
 
 def main(argv: list[str]) -> int:
@@ -270,6 +317,12 @@ def main(argv: list[str]) -> int:
         print(version())
     elif len(argv) in (1, 2) and argv[0] == "check-version":
         return check_version(argv[1] if len(argv) == 2 else None)
+    elif len(argv) in (1, 2) and argv[0] == "release-notes":
+        try:
+            print(release_notes(argv[1] if len(argv) == 2 else version()), end="")
+        except ValueError as err:
+            print(err, file=sys.stderr)
+            return 1
     else:
         print(__doc__, file=sys.stderr)
         return 2

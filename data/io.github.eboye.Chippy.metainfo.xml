@@ -10,9 +10,15 @@
 
   <description>
     <p>
-      Chippy shows your Dreame robot vacuum’s map with its rooms, lets you pick the rooms to
-      clean and start, pause or send the robot home. Sign in once with your Xiaomi account;
-      the session is kept in the GNOME keyring.
+      Chippy shows your Dreame robot vacuum’s map with its rooms and where the robot is while it
+      cleans, lets you pick the rooms to clean and start, pause or send the robot home. Sign in
+      once with your Xiaomi account, by password or by scanning a QR code with the Xiaomi Home
+      app; the session is kept in the GNOME keyring.
+    </p>
+    <p>
+      Edit the robot’s map too: draw no-go and no-mop zones and virtual walls, rename rooms,
+      give each room its own suction, mopping and passes, set the cleaning order, and merge or
+      split rooms.
     </p>
     <p>
       Chippy can keep watching in the background and notify you when cleaning finishes or the
@@ -31,7 +37,22 @@
 
   <content_rating type="oars-1.1" />
 
+  <!-- Newest release first. Each one needs a description: it becomes the "What's new" part of
+       the GitHub release notes (packaging/build.py release-notes) and shows in app stores. -->
   <releases>
-    <release version="0.1.0" date="2026-11-09" />
+    <release version="0.1.0" date="2026-11-10">
+      <url type="details">https://github.com/eboye/chippy-gtk/releases/tag/v0.1.0</url>
+      <description>
+        <p>The first release of Chippy, a GNOME app for Dreame robot vacuums.</p>
+        <ul>
+          <li>Live map: rooms with their areas, the dock, and the robot’s position and route while it cleans</li>
+          <li>Room cleaning: pick rooms on the map or in the list, choose suction and mopping, then start, pause, stop, send the robot home or make it play a sound</li>
+          <li>Map editor: no-go and no-mop zones, virtual walls, room names, per-room suction, mopping and passes, cleaning order, and room merge and split, all saved to the robot</li>
+          <li>Sign in with your Xiaomi password, or by scanning a QR code with the Xiaomi Home app for accounts that use Google, Facebook or Apple; robots shared with you are found too</li>
+          <li>Background alerts when a run finishes or the robot needs help, with readable names for Dreame fault codes</li>
+          <li>An optional GNOME Shell extension (GNOME 50 and 51) with status and quick controls in the top bar</li>
+        </ul>
+      </description>
+    </release>
   </releases>
 </component>
