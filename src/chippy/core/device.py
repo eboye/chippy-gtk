@@ -110,6 +110,24 @@ class Vacuum:
             return out[1]
         return None
 
+    def update_map(self, payload: dict) -> None:
+        siid, aiid = self._profile.actions["map_update"]
+        value = json.dumps(payload, separators=(",", ":"))
+        try:
+            result = self._action(
+                siid, aiid, [{"piid": self._profile.map_update_piid, "value": value}]
+            )
+        except DeviceError as exc:
+            code = str(exc).rsplit("code ", 1)[-1]
+            raise DeviceError(f"the robot refused the map change (code {code})") from exc
+        for item in result.get("out") or []:
+            code = item.get("code", 0) if isinstance(item, dict) else 0
+            if code:
+                raise DeviceError(f"the robot refused the map change (code {code})")
+
+    def set_room_settings_enabled(self, on: bool) -> None:
+        self._set(*self._profile.props["room_settings"], 1 if on else 0)
+
     def _action(self, siid: int, aiid: int, params: list | None = None) -> dict[str, Any]:
         with self._lock:
             result = self._dev.call_action_by(siid, aiid, params or [])

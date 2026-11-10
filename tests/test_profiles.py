@@ -96,3 +96,12 @@ def test_profile_lookup():
     assert not is_supported("roborock.vacuum.a15")
     with pytest.raises(UnsupportedModel):
         profile_for("roborock.vacuum.a15")
+
+
+def test_room_settings_flag_parsed():
+    on = [{"siid": 4, "piid": 26, "code": 0, "value": 1}]
+    off = [{"siid": 4, "piid": 26, "code": 0, "value": 0}]
+    assert R2209.parse_properties(on).room_settings is True
+    assert R2209.parse_properties(off).room_settings is False
+    assert R2209.parse_properties([]).room_settings is None
+    assert R2209.parse_properties([{"siid": 4, "piid": 26, "code": -1}]).room_settings is None

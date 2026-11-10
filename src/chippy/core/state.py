@@ -15,6 +15,7 @@ class Snapshot:
     has_water_tank: bool = False
     cleaned_area: int = 0
     cleaning_time: int = 0
+    room_settings: bool | None = None
 
 
 def name_to_value(table: dict[int, str], name: str) -> int:

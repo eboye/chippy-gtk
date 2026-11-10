@@ -43,6 +43,7 @@ def test_poll_requests_all_props_in_one_batch():
         (4, 4),
         (4, 5),
         (4, 6),
+        (4, 26),
     }
     assert snap.battery == 55
 
@@ -182,3 +183,34 @@ def test_connect_uses_short_timeout_and_one_retry():
     dev = vac._dev
     assert dev._protocol._timeout == 5
     assert dev.retry_count == 1
+
+
+def test_update_map_sends_compact_json_on_6_2():
+    dev = RecordingDev()
+    Vacuum(dev, R2209).update_map({"vw": {"line": [], "rect": [[0, 0, 500, 500]], "mop": []}})
+    assert dev.calls[-1] == (
+        "action",
+        6,
+        2,
+        [{"piid": 4, "value": '{"vw":{"line":[],"rect":[[0,0,500,500]],"mop":[]}}'}],
+    )
+
+
+def test_update_map_refusal_is_a_device_error():
+    dev = RecordingDev(action_result={"code": -1})
+    with pytest.raises(DeviceError, match=r"refused the map change \(code -1\)"):
+        Vacuum(dev, R2209).update_map({"cleanOrder": [1]})
+
+
+def test_update_map_refusal_inside_out_is_a_device_error():
+    dev = RecordingDev(action_result={"code": 0, "out": [{"piid": 4, "code": -5}]})
+    with pytest.raises(DeviceError, match=r"refused the map change \(code -5\)"):
+        Vacuum(dev, R2209).update_map({"cleanOrder": [1]})
+
+
+def test_room_settings_switch_is_4_26():
+    dev = RecordingDev()
+    vac = Vacuum(dev, R2209)
+    vac.set_room_settings_enabled(True)
+    vac.set_room_settings_enabled(False)
+    assert dev.calls == [("set", 4, 26, 1), ("set", 4, 26, 0)]

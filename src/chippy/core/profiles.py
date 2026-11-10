@@ -28,6 +28,7 @@ class Profile:
     segment_clean_mode: int
     # faults that are only reminders ("mopping done, clean the mop"): no error, no alarm
     reminder_faults: frozenset[int] = frozenset()
+    map_update_piid: int | None = None
 
     def map_state(self, raw_status: int | None, charging: int | None) -> str:
         if raw_status in self.cleaning_statuses:
@@ -74,6 +75,7 @@ class Profile:
             has_water_tank=values.get("water_tank") == 1,
             cleaned_area=int(values.get("cleaned_area") or 0),
             cleaning_time=int(values.get("cleaning_time") or 0),
+            room_settings=(values["room_settings"] == 1) if "room_settings" in values else None,
         )
 
     def room_clean_params(self, ids: list[int], suction: str, water: str) -> list[dict]:
@@ -222,6 +224,7 @@ R2209 = Profile(
         "suction": (4, 4),
         "water": (4, 5),
         "water_tank": (4, 6),
+        "room_settings": (4, 26),
     },
     actions={
         "start": (2, 1),
@@ -231,6 +234,7 @@ R2209 = Profile(
         "locate": (7, 1),
         "clean": (4, 1),
         "map_request": (6, 1),
+        "map_update": (6, 2),
     },
     cleaning_statuses=frozenset({1, 7, 11, 12}),
     statuses={3: "paused", 4: "error", 5: "returning", 6: "charging", 13: "docked"},
@@ -242,6 +246,7 @@ R2209 = Profile(
     map_info_prop=(6, 8),
     map_format="plain",
     segment_clean_mode=18,
+    map_update_piid=4,
 )
 
 PROFILES: tuple[Profile, ...] = (R2209,)
