@@ -158,7 +158,7 @@ def test_qr_sign_in_reaches_devices_and_stores_no_password(monkeypatch):
     flow = LoginFlow(FakeCloud, InlineRunner(), lambda page, data: pages.append((page, data)))
     flow.sign_in_qr()
     names = [p for p, _d in pages]
-    assert names[:2] == ["qr", "devices"]
+    assert names[:3] == ["qr", "qr-approved", "devices"]
     qr = pages[0][1]
     assert qr["image"].startswith(b"\x89PNG") and qr["url"].startswith("https://")
     flow.choose(pages[-1][1]["vacuums"][0])
@@ -203,3 +203,46 @@ def test_qr_start_failure_is_reported_on_the_qr_page(monkeypatch):
     flow.sign_in_qr()
     assert pages[-1][0] == "error" and pages[-1][1]["page"] == "qr"
     assert "reach Xiaomi" in pages[-1][1]["message"] and not flow.busy
+
+
+def _qr_flow(cloud_class=FakeCloud):
+    pages, runner = [], DeferredRunner()
+    flow = LoginFlow(cloud_class, runner, lambda page, data: pages.append((page, data)))
+    return flow, pages, runner
+
+
+def _step(runner):
+    func, callback = runner.pending.pop(0)
+    InlineRunner().run(func, callback)
+
+
+def test_qr_page_that_cancels_itself_leaves_the_flow_usable(monkeypatch):
+    """The dialog cancels when it cannot show the image: the flow must not stay busy."""
+    monkeypatch.setenv("CHIPPY_FAKE_QR_DELAY", "0")
+    runner = DeferredRunner()
+    holder = {}
+
+    def on_page(page, data):
+        if page == "qr":
+            holder["flow"].cancel_qr()
+
+    flow = LoginFlow(FakeCloud, runner, on_page)
+    holder["flow"] = flow
+    flow.sign_in_qr()
+    runner.finish()
+    assert not flow.busy
+    flow.sign_in("plain@test", "pw")
+    assert runner.pending  # a password sign-in is accepted again
+
+
+def test_back_during_discovery_unlocks_and_drops_the_device_list(monkeypatch):
+    monkeypatch.setenv("CHIPPY_FAKE_QR_DELAY", "0")
+    flow, pages, runner = _qr_flow()
+    flow.sign_in_qr()
+    _step(runner)  # start: qr page
+    _step(runner)  # wait: approved, discovery queued
+    assert pages[-1][0] == "qr-approved" and len(runner.pending) == 1
+    flow.cancel_qr()  # Back
+    assert not flow.busy
+    runner.finish()  # discovery answers late
+    assert pages[-1][0] == "qr-approved"  # no device list after Back

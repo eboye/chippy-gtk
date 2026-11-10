@@ -91,24 +91,30 @@ class LoginFlow:
                 self._error("qr", _message(error))
                 return
             self._on_page("qr", {"image": qr.image, "url": qr.login_url})
+            if cancel["set"]:
+                return  # the page couldn't show the code and cancelled
             self.busy = True  # waiting for approval: other submissions stay ignored
             self._runner.run(lambda: cloud.wait_qr_login(qr, lambda: cancel["set"]), approved)
 
         def approved(_r, error):
             if cancel["set"] or isinstance(error, QrLoginCancelled):
                 return
-            self._qr_cancel = None
             if isinstance(error, QrLoginExpired):
+                self._qr_cancel = None
                 self._on_page("error", {"page": "qr", "message": str(error), "expired": True})
             elif error is not None:
+                self._qr_cancel = None
                 self._error("qr", _message(error))
             else:
-                self._discover()
+                # Still cancellable (Back) until the vacuum list shows; stay busy meanwhile.
+                self._page_cb("qr-approved", {})
+                self._discover(cancel)
 
         self._runner.run(cloud.start_qr_login, started)
 
     def cancel_qr(self) -> None:
-        """Stop waiting for a QR approval (Back, close, or a new code)."""
+        """Stop a QR sign-in (Back, close, or a new code): its wait and any later answer,
+        including the vacuum list of an approved code, are dropped."""
         if self._qr_cancel is not None:
             self._qr_cancel["set"] = True
             self._qr_cancel = None
@@ -191,8 +197,12 @@ class LoginFlow:
 
         self._runner.run(lambda: self._cloud.send_email_code(self._two_factor_url), after)
 
-    def _discover(self) -> None:
+    def _discover(self, cancel: dict | None = None) -> None:
         def after(found, error):
+            if cancel is not None:
+                if cancel["set"]:
+                    return  # the QR sign-in was cancelled while the list loaded
+                self._qr_cancel = None
             if error is not None:
                 self._error("account", _message(error))
             elif not any(v.supported for v in found):
@@ -262,7 +272,8 @@ class LoginDialog(Adw.Dialog):
         )
         self.qr_status = Gtk.Box(spacing=8, halign=Gtk.Align.CENTER)
         self.qr_status.append(Adw.Spinner())
-        self.qr_status.append(Gtk.Label(label="Waiting for approval…", css_classes=["dim-label"]))
+        self.qr_status_label = Gtk.Label(label="Waiting for approval…", css_classes=["dim-label"])
+        self.qr_status.append(self.qr_status_label)
         self.qr_error = Gtk.Label(css_classes=["error"], wrap=True, visible=False)
         self.qr_again = Gtk.Button(
             label="Show a new code", css_classes=["pill", "suggested-action"], visible=False
@@ -376,6 +387,7 @@ class LoginDialog(Adw.Dialog):
         # Back from the QR page stops the wait; moving on to the vacuum list does not.
         if self.nav.get_visible_page() is not self.devices_page:
             self._flow.cancel_qr()
+            self._busy(False)  # also after Back while the vacuum list was loading
         self.qr_button.set_sensitive(True)
 
     def _open_qr_url(self) -> None:
@@ -482,16 +494,27 @@ class LoginDialog(Adw.Dialog):
                 return
             self._qr_url = data["url"]
             self.qr_picture.set_paintable(texture)
+            self.qr_status_label.set_label("Waiting for approval…")
             self.qr_status.set_visible(True)
             self.qr_error.set_visible(False)
             self.qr_again.set_visible(False)
+            self.qr_browser.set_visible(True)
             self._push(self.qr_page, "qr")
+        elif name == "qr-approved":
+            self.qr_status_label.set_label("Signed in, finding your vacuum…")
+            self.qr_browser.set_visible(False)
+            self._busy(True)  # the flow stays busy until the vacuum list shows
         elif name == "code":
             if data.get("resent"):
                 self.code.set_text("")
             self._push(self.code_page, "code")
             GLib.idle_add(self._focus, self.code)
         elif name == "devices":
+            # A QR code is used once: Back from the list finds the page offering a new one.
+            self.qr_status.set_visible(False)
+            self.qr_error.set_visible(False)
+            self.qr_again.set_visible(True)
+            self.qr_browser.set_visible(False)
             self.devices.remove_all()
             first = None
             for v in data["vacuums"]:

@@ -11,7 +11,7 @@ import string
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import parse_qs, urlparse
 
 import requests
@@ -86,10 +86,10 @@ class QrLogin:
     """A started QR sign-in. `login_url` is the same login as a web page; `poll_url` is
     secret (it collects the session) and must never be logged."""
 
-    image: bytes
-    login_url: str
-    poll_url: str
-    timeout: int
+    image: bytes = field(repr=False)
+    login_url: str = ""
+    poll_url: str = field(default="", repr=False)  # collects the session: never print it
+    timeout: int = 0
 
 
 def _network_safe(method):
