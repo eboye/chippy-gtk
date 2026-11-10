@@ -315,6 +315,10 @@ class FakeCloud:
             {"did": "1004", "model": "yeelink.light.color1", "name": "Lamp"},
         ]
 
+    def request_country(self, path: str, country: str, params: dict) -> str:
+        """Home and share lists: empty (the fake's robots come from `get_devices`)."""
+        return json.dumps({"code": 0, "result": {}})
+
     def session_state(self) -> dict:
         return {"user_id": "fake"}
 
