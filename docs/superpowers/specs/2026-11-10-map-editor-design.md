@@ -21,7 +21,7 @@ unverified until the live check.
   - room name: `{"nsr": {"<seg>": {"name": base64(utf-8 name), "type": 0, "index": 0}},
     "mapid": <map id>}`.
   - per-room settings: `{"customeClean": [[seg, suction, water, passes], …]}` for every room;
-    suction 0–3 (quiet…turbo), water 1–3 (low…high = profile water value + 1), passes 1–3.
+    suction 0–3 (quiet…turbo), water 1–3 (low…high, the profile values), passes 1–3.
   - cleaning order: `{"cleanOrder": [seg, …]}` (every room, in order).
   - merge: `{"msr": [seg_a, seg_b], "mapid": <map id>}`.
   - split: `{"dsrid": [x1, y1, x2, y2, seg], "mapid": <map id>}` (the line in map mm).
