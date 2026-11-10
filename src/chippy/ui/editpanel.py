@@ -15,6 +15,7 @@ from .sidebar import SUCTION, WATER  # noqa: E402
 
 SETTINGS_UNKNOWN = "Settings from the robot aren't known yet; saving sets them."
 NOT_SUPPORTED = "Not supported on this model"
+ZONES_UNKNOWN = "Zones on this map couldn't be read; editing them is off to protect them."
 ZONE_TITLES = {"no_go": "No-go zone", "no_mop": "No-mop zone", "wall": "Wall"}
 _ZONE_FIELD = {"no_go": "no_go", "no_mop": "no_mop", "wall": "walls"}
 
@@ -71,9 +72,12 @@ def alert_buttons(dialog: Adw.AlertDialog) -> dict[str, Gtk.Widget]:
     return found
 
 
-def mark_unsupported(widget: Gtk.Widget, unsupported: bool) -> None:
+def mark_unsupported(
+    widget: Gtk.Widget, unsupported: bool, why: str = NOT_SUPPORTED, default: str | None = None
+) -> None:
+    """Insensitive with `why` as its tooltip, or sensitive with its `default` tooltip."""
     widget.set_sensitive(not unsupported)
-    widget.set_tooltip_text(NOT_SUPPORTED if unsupported else None)
+    widget.set_tooltip_text(why if unsupported else default)
 
 
 class EditPanel(Gtk.Box):
@@ -97,6 +101,7 @@ class EditPanel(Gtk.Box):
         self.tool: str | None = None
         self.alert: Adw.AlertDialog | None = None
         self._picks: list[int] = []  # rooms clicked so far in this Order pass
+        self.shown: set[int] | None = None  # rooms on the map (None: all); the rest are hidden
         self._saving = False
         self._allowed = True
         self._updating = False
@@ -120,6 +125,10 @@ class EditPanel(Gtk.Box):
             label=SETTINGS_UNKNOWN, wrap=True, xalign=0, css_classes=["dim-label"], visible=False
         )
         body.append(self.info_label)
+        self.zones_label = Gtk.Label(
+            label=ZONES_UNKNOWN, wrap=True, xalign=0, css_classes=["dim-label"], visible=False
+        )
+        body.append(self.zones_label)
 
         general = Adw.PreferencesGroup()
         self.room_settings_row = Adw.SwitchRow(title="Use room settings")
@@ -222,14 +231,19 @@ class EditPanel(Gtk.Box):
         self.content_stack.set_visible_child_name("loading")
         self._update_actions()
 
-    def set_session(self, original: EditSession, edited: EditSession, profile) -> None:
-        """Show a session (after a merge or split, `edited` comes from `carry_edits`)."""
+    def set_session(
+        self, original: EditSession, edited: EditSession, profile, shown: set[int] | None = None
+    ) -> None:
+        """Show a session (after a merge or split, `edited` comes from `carry_edits`).
+        `shown`: the rooms on the map; the order position counts only those."""
         self.original, self.edited, self.profile = original, edited, profile
+        self.shown = None if shown is None else set(shown)
         if self.room not in edited.names:
             self.room = 0
         self.zone, self._picks = None, []
         self.content_stack.set_visible_child_name("session")
         self.info_label.set_visible(not original.settings_known)
+        self.zones_label.set_visible(not edited.zones_known)
         self.apply_unsupported()
 
     def set_tool(self, tool: str | None) -> None:
@@ -249,28 +263,32 @@ class EditPanel(Gtk.Box):
         self._update_actions()
 
     def apply_unsupported(self) -> None:
-        """Disable the controls of kinds the robot refused and drop their staged changes, so
-        the next save does not stop at them again."""
+        """Disable the controls of kinds the model lacks (their staged edits stay, but are not
+        sent: `changes()` leaves those kinds out), of unreadable zones, and the per-room
+        settings while the robot's settings are unknown (saving defaults would overwrite them)."""
         edited, original = self.edited, self.original
         if edited is None:
             return
         off = edited.unsupported
-        if "zones" in off:
-            edited.zones = original.zones
-        if "names" in off:
-            edited.names = dict(original.names)
-        if "settings" in off:
-            edited.settings = dict(original.settings)
-        if "order" in off:
-            edited.order = list(original.order)
-        if "room_settings" in off:
-            edited.use_room_settings = original.use_room_settings
         mark_unsupported(self.name_row, "names" in off)
         for row in (self.suction_row, self.water_row, self.passes_row):
-            mark_unsupported(row, "settings" in off)
+            if "settings" in off:
+                mark_unsupported(row, True)
+            else:  # unknown settings (the info label says so too)
+                mark_unsupported(row, not original.settings_known, SETTINGS_UNKNOWN)
         mark_unsupported(self.room_settings_row, "room_settings" in off)
         mark_unsupported(self.reset_order_button, "order" in off)
-        mark_unsupported(self.zone_delete, "zones" in off)
+        if "zones" in off:
+            mark_unsupported(self.zone_delete, True)
+        else:
+            mark_unsupported(self.zone_delete, not edited.zones_known, ZONES_UNKNOWN, "Delete")
+        self._sync()
+
+    def mark_saved(self, kinds) -> None:
+        """`kinds` reached the robot (the rest of the save failed): they are the original now."""
+        if self.original is None or self.edited is None or not kinds:
+            return
+        self.original = self.original.saved(self.edited, kinds)
         self._sync()
 
     # edits -------------------------------------------------------------------
@@ -301,12 +319,12 @@ class EditPanel(Gtk.Box):
     def set_zones(self, zones: MapZones) -> None:
         if self.edited is None:
             return
-        if "zones" not in self.edited.unsupported:  # read-only: the map redraws the staged ones
+        if not self.edited.zones_locked:  # read-only: the map redraws the staged ones
             self.edited.zones = zones
         self._changed()
 
     def delete_zone(self) -> None:
-        if self.edited is None or self.zone is None or "zones" in self.edited.unsupported:
+        if self.edited is None or self.zone is None or self.edited.zones_locked:
             return
         kind, index = self.zone
         field = _ZONE_FIELD[kind]
@@ -360,6 +378,8 @@ class EditPanel(Gtk.Box):
     def _on_setting(self, *_args) -> None:
         if self._updating or self.edited is None or not self.room:
             return
+        if not self.original.settings_known or "settings" in self.edited.unsupported:
+            return
         suction, water = self.suction_row.get_selected(), self.water_row.get_selected()
         if suction >= len(SUCTION) or water >= len(WATER):
             return
@@ -410,8 +430,9 @@ class EditPanel(Gtk.Box):
             if setting.water in WATER:
                 self.water_row.set_selected(WATER.index(setting.water))
             self.passes_row.set_value(setting.passes)
-        if seg in edited.order:
-            self.order_row.set_subtitle(f"{edited.order.index(seg) + 1} of {len(edited.order)}")
+        order = [s for s in edited.order if self.shown is None or s in self.shown]
+        if seg in order:
+            self.order_row.set_subtitle(f"{order.index(seg) + 1} of {len(order)}")
         else:
             self.order_row.set_subtitle("")
 

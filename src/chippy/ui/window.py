@@ -9,9 +9,23 @@ gi.require_version("Graphene", "1.0")
 from gi.repository import Adw, GObject, Graphene, Gtk  # noqa: E402
 
 from .. import APP_ID  # noqa: E402
-from ..core.mapedit import EditSession, MapZones, carry_edits  # noqa: E402
-from ..mapmodel import geometry_from_frame  # noqa: E402
-from .editpanel import EditPanel, alert_buttons, confirm, mark_unsupported  # noqa: E402
+from ..controller import MapNotUpdated  # noqa: E402
+from ..core.mapedit import (  # noqa: E402
+    EditSession,
+    MapZones,
+    are_neighbours,
+    carry_edits,
+    save_failure_text,
+)
+from ..mapmodel import geometry_from_frame, line_splits_room  # noqa: E402
+from .editpanel import (  # noqa: E402
+    NOT_SUPPORTED,
+    ZONES_UNKNOWN,
+    EditPanel,
+    alert_buttons,
+    confirm,
+    mark_unsupported,
+)
 from .mapview import MapView  # noqa: E402
 from .sidebar import Sidebar  # noqa: E402
 
@@ -353,6 +367,7 @@ class MainWindow(Adw.ApplicationWindow):
         for tool, name, icon, _hint in EDIT_TOOLS:
             button = Gtk.ToggleButton(icon_name=icon, tooltip_text=name, css_classes=["osd"])
             button.update_property([Gtk.AccessibleProperty.LABEL], [name])
+            button.chippy_name = name  # its tooltip again once no longer "not supported"
             if group is None:
                 group = button
             else:
@@ -390,7 +405,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.side_actions.set_visible_child_name("edit")
         self.toolbar.set_visible(True)
         for button in self.tool_buttons.values():
-            mark_unsupported(button, False)
+            mark_unsupported(button, False, default=button.chippy_name)
         self._choose_tool("select")
         self._load_session()
 
@@ -410,7 +425,8 @@ class MainWindow(Adw.ApplicationWindow):
                 self._leave_edit()
                 return
             edited = carry_edits(*carry, session) if carry is not None else session.copy()
-            self.edit_panel.set_session(session, edited, ctl.profile)
+            shown = {r.id for r in ctl.visible_rooms()}
+            self.edit_panel.set_session(session, edited, ctl.profile, shown)
             self.edit_panel.set_tool(self.map_view.tool)
             self._apply_unsupported_tools()
             self._edit_changed()
@@ -462,14 +478,21 @@ class MainWindow(Adw.ApplicationWindow):
         self.map_view.set_tool(tool)
         self.edit_panel.set_tool(tool)
         self.edit_panel.set_zone(self.map_view.selected_zone)
-        self.hint.set_label(next(h for t, _n, _i, h in EDIT_TOOLS if t == tool))
+        self._show_tool_hint()
         self.map_view.set_selection(self._map_selection())
 
     def _apply_unsupported_tools(self) -> None:
         edited = self.edit_panel.edited
-        off = edited.unsupported if edited is not None else set()
+        off = set(edited.unsupported) if edited is not None else set()
+        why = {kind: NOT_SUPPORTED for kind in off}
+        if edited is not None and not edited.zones_known and "zones" not in off:
+            off.add("zones")  # unreadable zones are read-only, like refused ones
+            why["zones"] = ZONES_UNKNOWN
         for tool, kind in _TOOL_KIND.items():
-            mark_unsupported(self.tool_buttons[tool], kind in off)
+            button = self.tool_buttons[tool]
+            mark_unsupported(
+                button, kind in off, why.get(kind, NOT_SUPPORTED), default=button.chippy_name
+            )
         self.map_view.set_zones_editable("zones" not in off)
         if _TOOL_KIND.get(self.map_view.tool) in off:
             self._choose_tool("select")
@@ -529,11 +552,18 @@ class MainWindow(Adw.ApplicationWindow):
         if self.map_view.tool == "merge":
             if not self._merge_first or self._merge_first == seg:
                 self._merge_first = 0 if self._merge_first == seg else seg
+                self._show_tool_hint()
+            elif not self._neighbours(self._merge_first, seg):
+                self.hint.set_label(f"Pick a room next to {self._room_name(self._merge_first)}")
             else:
                 self._confirm_merge(self._merge_first, seg)
         else:
             self.edit_panel.pick_room(seg)
         self.map_view.set_selection(self._map_selection())
+
+    def _neighbours(self, a: int, b: int) -> bool:
+        frame = self._ctl.current_frame if self._ctl is not None else None
+        return frame is None or are_neighbours(frame.neighbours, a, b)
 
     def _confirm_merge(self, a: int, b: int) -> None:
         if self._alert is not None:
@@ -550,6 +580,15 @@ class MainWindow(Adw.ApplicationWindow):
     def _confirm_split(self, seg: int, line) -> None:
         if not self.editing or self.edit_panel.edited is None or self._alert is not None:
             return
+        ctl = self._ctl
+        frame = ctl.current_frame if ctl is not None else None
+        if (
+            frame is None
+            or ctl.grid is None
+            or not line_splits_room(ctl.grid, geometry_from_frame(frame), seg, line)
+        ):
+            self.hint.set_label(f"Draw the line across {self._room_name(seg)}, edge to edge")
+            return
         self._alert = confirm(
             self,
             f"Split {self._room_name(seg)}?",
@@ -559,9 +598,15 @@ class MainWindow(Adw.ApplicationWindow):
             on_close=self._alert_closed,
         )
 
+    def _show_tool_hint(self) -> None:
+        tool = self.map_view.tool
+        self.hint.set_label(next((h for t, _n, _i, h in EDIT_TOOLS if t == tool), BROWSE_HINT))
+
     def _alert_closed(self) -> None:
         self._alert = None
         self._merge_first = 0
+        if self.editing:
+            self._show_tool_hint()  # a "Pick a room next to ..." hint is answered
         self.map_view.set_selection(self._map_selection())
 
     def _structural(self, kind: str, *args) -> None:
@@ -569,17 +614,22 @@ class MainWindow(Adw.ApplicationWindow):
         ctl, generation, panel = self._ctl, self._edit_generation, self.edit_panel
         if ctl is None or panel.edited is None:
             return
-        original, edited = panel.original, panel.edited
+        original, edited, panel_shown = panel.original, panel.edited, panel.shown
         self._set_busy(True)
         panel.begin()
 
         def done(error) -> None:
             if generation != self._edit_generation or ctl is not self._ctl:
                 return
+            if isinstance(error, MapNotUpdated):
+                # the robot did it: never go back to the session from before it
+                self.toast(str(error))
+                self._leave_edit()
+                return
             if error is not None:
                 self._set_busy(False)
                 self.toast(f"{kind.capitalize()} failed: {error}")
-                panel.set_session(original, edited, ctl.profile)
+                panel.set_session(original, edited, ctl.profile, panel_shown)
                 panel.set_tool(self.map_view.tool)
                 self._edit_changed()
                 return
@@ -598,17 +648,18 @@ class MainWindow(Adw.ApplicationWindow):
         self._set_busy(True)
         self.edit_button.set_sensitive(False)
 
-        def done(error, _kind) -> None:
+        def done(error, failed, done_kinds) -> None:
             if generation != self._edit_generation or ctl is not self._ctl:
                 return
             panel.set_saving(False)
             self._set_busy(False)
-            if error is None:
-                self.toast("Saved to robot")
+            if error is None or isinstance(error, MapNotUpdated):
+                self.toast("Saved to robot" if error is None else str(error))
                 self._leave_edit()
                 return
-            self.toast(f"Saving failed: {error}")
-            panel.apply_unsupported()  # a refused kind is disabled and its changes dropped
+            self.toast(save_failure_text(error, failed, done_kinds))
+            panel.mark_saved(done_kinds)  # not resent, not a change any more
+            panel.apply_unsupported()  # a kind the model lacks is disabled; edits are kept
             self._apply_unsupported_tools()
             self._edit_changed()
             self._update_edit_allowed()
@@ -622,10 +673,14 @@ class MainWindow(Adw.ApplicationWindow):
         buttons["save"] = centre(self.edit_panel.save_button)
         buttons["cancel"] = centre(self.edit_panel.cancel_button)
         buttons["edit"] = centre(self.edit_button)
+        buttons["name"] = centre(self.edit_panel.name_row)
         return {
             "mode": self.editing,
             "tool": self.map_view.tool,
             "dirty": self.edit_panel.dirty,
+            "room": self.edit_panel.room,
+            "hint": self.hint.get_label(),
+            "save_sensitive": self.edit_panel.save_button.get_sensitive(),
             "buttons": buttons,
             "zones": {
                 "no_go": len(zones.no_go),
@@ -688,6 +743,7 @@ class MainWindow(Adw.ApplicationWindow):
                 for name, p in (getattr(dialog, "test_buttons", dict)() if dialog else {}).items()
             },
             "rooms": rooms,
+            "room_names": {str(r.id): r.name for r in self.map_view.rooms if not r.hidden},
             "checks": {str(k): centre(c) for k, c in self.sidebar.checks.items()},
             "buttons": {
                 "clean": centre(self.sidebar.clean_button),

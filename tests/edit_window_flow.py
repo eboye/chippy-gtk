@@ -15,7 +15,8 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GObject, Gtk  # noqa: E402
 
 from chippy.controller import VacuumController  # noqa: E402
-from chippy.core.fake import FakeMap, FakeVacuum, build_fake_payload  # noqa: E402
+from chippy.core.device import DeviceError  # noqa: E402
+from chippy.core.fake import FakeMap, FakeVacuum, _cell_mm, fake_saved_payload  # noqa: E402
 from chippy.core.mapedit import Line, MapZones, Rect  # noqa: E402
 from chippy.core.profiles import R2209  # noqa: E402
 from chippy.store import MapCache, RoomStore  # noqa: E402
@@ -40,29 +41,44 @@ class StubApp(Adw.Application):
         pass
 
 
-def build(tmp: Path):
-    from chippy.ui.window import MainWindow
-
-    fm = FakeMap()
+def make_controller(tmp: Path, cleanset_unknown: bool = False):
+    """`cleanset_unknown`: the real robot's case, "Use room settings" on and the per-room
+    settings unreadable (like CHIPPY_FAKE_CLEANSET_UNKNOWN=1)."""
+    tmp.mkdir(parents=True, exist_ok=True)
+    fm = FakeMap(room_settings=cleanset_unknown)
     vac = FakeVacuum(fake_map=fm)
     ctl = VacuumController(
         vac,
         R2209,
         RoomStore(tmp / "rooms.json", legacy=tmp / "none.json"),
         MapCache(tmp / "map.payload"),
-        lambda: build_fake_payload(fake_map=fm),
+        lambda: fake_saved_payload(fm),
         runner=InlineRunner(),
         scheduler=ManualScheduler(),
-        fetch_cleanset=lambda: fm.cleanset,
+        fetch_cleanset=lambda: None if cleanset_unknown else fm.cleanset,
     )
+    ctl.start()
+    return ctl, vac, fm
+
+
+def build(tmp: Path):
+    from chippy.ui.window import MainWindow
+
+    ctl, vac, fm = make_controller(tmp / "main")
     app = StubApp()
     assert app.register(None)
-    ctl.start()
     app.state, app.controller = "ready", ctl
     window = MainWindow(app)
     toasts = []
     window.toast = toasts.append
     return window, ctl, vac, fm, toasts
+
+
+def switch_controller(window, ctl) -> None:
+    """The app restarted on another robot: the window follows the new controller."""
+    window.app.controller = ctl
+    window.app.emit("state-changed")
+    assert window._ctl is ctl
 
 
 def edit_state(window):
@@ -143,9 +159,10 @@ def check_leaves_when_the_robot_gets_busy(window, ctl, vac):
     ctl.act("stop")
 
 
-def check_merge_and_split(window, ctl, fm, toasts):
+def check_merge_and_split(window, ctl, vac, fm, toasts):
     enter(window)
     panel = window.edit_panel
+    edits_before = len(vac.edits)
     extra = MapZones(no_mop=(Rect(0, 0, 600, 600),))
     window.map_view.emit("zones-edited", extra)
     # unsaved edits that must survive the merge (for rooms that still exist)
@@ -159,10 +176,14 @@ def check_merge_and_split(window, ctl, fm, toasts):
     window.tool_buttons["order"].set_active(True)
     window.map_view.emit("room-picked", 4)
     window.map_view.emit("room-picked", 3)
-    assert panel.edited.order == [4, 3, 1, 2]
+    assert panel.edited.order == [4, 3, 1, 2, 5]  # 5: hidden, still in the robot's order
+    assert window.map_view.order_badges() == {4: 1, 3: 2, 1: 3, 2: 4}  # no number for 5
     window.tool_buttons["merge"].set_active(True)
     assert edit_state(window)["tool"] == "merge"
     window.map_view.emit("room-picked", 2)
+    assert window.map_view.selected == {2}
+    window.map_view.emit("room-picked", 1)  # not next to the Kitchen: refused with a hint
+    assert window._alert is None and window.hint.get_label() == "Pick a room next to Kitchen"
     assert window.map_view.selected == {2}
     window.map_view.emit("room-picked", 4)
     alert = window._alert
@@ -175,22 +196,32 @@ def check_merge_and_split(window, ctl, fm, toasts):
     edited = panel.edited
     assert edited.names[1] == "Lounge" and panel.original.names[1] == "Living room"
     assert edited.settings[2].passes == 3
-    assert edited.order == [3, 1, 2]
+    assert edited.order == [3, 1, 2, 5]
     assert edited.use_room_settings is True
     assert window.edit_panel.dirty
     window.tool_buttons["split"].set_active(True)
     window.map_view.emit("room-picked", 1)
     rooms_before = len(fm.ids())
-    window.map_view.emit("split-line", 99, Line(0, 0, 900, 900))  # no such room: refused
-    respond(window._alert, "split")
-    assert any("Split failed" in t for t in toasts), toasts
-    assert window.edit_panel.edited.zones == extra and len(fm.ids()) == rooms_before
     xs = sorted({x for row in fm.layout for x in range(len(row)) if row[x] == "1"})
     ys = sorted({y for y, row in enumerate(fm.layout) if "1" in row})
-    from chippy.core.fake import _cell_mm
-
     mid_x = (xs[0] + xs[-1] + 1) / 2
     top, bottom = _cell_mm(mid_x, ys[0] - 1), _cell_mm(mid_x, ys[-1] + 2)
+    middle = _cell_mm(mid_x, (ys[0] + ys[-1]) / 2)
+    window.map_view.emit("split-line", 1, Line(*top, *middle))  # ends inside: not sent
+    assert window._alert is None and len(vac.edits) == edits_before + 1
+    assert window.hint.get_label() == "Draw the line across Lounge, edge to edge"
+    real_update = vac.update_map
+
+    def refuse(payload):
+        raise DeviceError("the robot refused the map change (code -1)", code=-1)
+
+    vac.update_map = refuse
+    window.map_view.emit("split-line", 1, Line(*top, *bottom))
+    respond(window._alert, "split")
+    vac.update_map = real_update
+    assert toasts[-1] == "Split failed: the robot refused the map change (code -1)", toasts
+    assert window.edit_panel.edited.zones == extra and len(fm.ids()) == rooms_before
+    assert window.editing and panel.edited.names[1] == "Lounge"  # edits kept
     window.map_view.emit("split-line", 1, Line(*top, *bottom))
     alert = window._alert
     assert alert.get_heading() == "Split Lounge?"  # the unsaved name carried over
@@ -199,7 +230,7 @@ def check_merge_and_split(window, ctl, fm, toasts):
     assert window.editing and window.edit_panel.edited.zones == extra
     new_room = max(fm.ids())
     assert panel.edited.names[1] == "Lounge"
-    assert panel.edited.order == [3, 1, 2, new_room]  # the new room after the survivors
+    assert panel.edited.order == [3, 1, 2, 5, new_room]  # the new room after the survivors
     window.edit_panel.cancel()
     respond(window.edit_panel.alert, "discard")
     assert not window.editing
@@ -210,10 +241,8 @@ def check_unsupported(window, ctl, vac, toasts):
     original_update = vac.update_map
 
     def refuse_order(payload):
-        if "cleanOrder" in payload:
-            from chippy.core.device import DeviceError
-
-            raise DeviceError("refused")
+        if "cleanOrder" in payload:  # MIoT "no such action": this model can't do it
+            raise DeviceError("the robot refused the map change (code -4001)", code=-4001)
         original_update(payload)
 
     vac.update_map = refuse_order
@@ -221,34 +250,37 @@ def check_unsupported(window, ctl, vac, toasts):
     window.map_view.emit("room-picked", 3)
     assert window.edit_panel.edited.order[0] == 3
     window.edit_panel.save_button.emit("clicked")
-    assert window.editing and toasts[-1].startswith("Saving failed")
+    assert window.editing
+    assert (
+        toasts[-1] == "Saving cleaning order failed: the robot refused the map change (code -4001)"
+    ), toasts
     order_button = window.tool_buttons["order"]
     assert not order_button.get_sensitive()
     assert order_button.get_tooltip_text() == "Not supported on this model"
+    assert window.tool_buttons["wall"].get_tooltip_text() == "Wall"
     assert window.map_view.tool == "select"
-    assert not window.edit_panel.dirty  # the refused change was dropped
+    assert window.edit_panel.edited.order[0] == 3  # the staged order is kept ...
+    assert not window.edit_panel.dirty  # ... but can't be sent
     vac.update_map = original_update
     window.edit_panel.cancel()
     assert not window.editing
 
 
 def check_zones_read_only(window, vac, toasts):
-    from chippy.core.device import DeviceError
-
     enter(window)
     original_update = vac.update_map
 
     def refuse_zones(payload):
         if "vw" in payload:
-            raise DeviceError("refused")
+            raise DeviceError("the robot refused the map change (code -4004)", code=-4004)
         original_update(payload)
 
     vac.update_map = refuse_zones
-    staged = window.edit_panel.edited.zones
-    window.map_view.emit("zones-edited", MapZones(no_go=(Rect(0, 0, 900, 900),)))
+    staged = MapZones(no_go=(Rect(0, 0, 900, 900),))
+    window.map_view.emit("zones-edited", staged)
     window.edit_panel.save_button.emit("clicked")
-    assert toasts[-1].startswith("Saving failed")
-    assert window.edit_panel.edited.zones == staged
+    assert toasts[-1].startswith("Saving zones failed")
+    assert window.edit_panel.edited.zones == staged  # kept, not reverted
     assert not window.map_view.zones_editable
     assert not window.tool_buttons["no_go"].get_sensitive()
     # a map edit that slips through is ignored and the map goes back to the staged zones
@@ -282,7 +314,7 @@ def check_save_freezes_the_toggle_and_leaves_after(window, ctl, vac, toasts):
     window.edit_panel.save_button.emit("clicked")
     vac.update_map = original_update
     assert seen == {"toggle_while_docked": False, "editing": True, "alert": None}, seen
-    assert toasts[-1] == "Saving failed: timed out"
+    assert toasts[-1] == "Saving zones failed: timed out"
     # the save is over, the robot is busy and there are changes: ask now
     alert = window.edit_panel.alert
     assert alert is not None and alert.get_heading() == "Discard changes?"
@@ -308,6 +340,103 @@ def check_no_stacked_dialogs(window, ctl):
     ctl.act("stop")
 
 
+def check_partial_failure_keeps_the_rest(window, ctl, vac, fm, toasts):
+    enter(window)
+    real_update = vac.update_map
+
+    def refuse_names(payload):
+        if "nsr" in payload:
+            raise DeviceError("the robot refused the map change (code -1)", code=-1)
+        real_update(payload)
+
+    vac.update_map = refuse_names
+    zones = MapZones(no_mop=(Rect(-1000, 0, 0, 1000),))
+    window.map_view.emit("zones-edited", zones)
+    window.map_view.emit("room-picked", 3)
+    window.edit_panel.name_row.set_text("Guest room")
+    window.edit_panel.save_button.emit("clicked")
+    vac.update_map = real_update
+    assert toasts[-1] == (
+        "Saved zones; room names failed: the robot refused the map change (code -1)"
+    ), toasts
+    panel = window.edit_panel
+    assert window.editing and panel.edited.names[3] == "Guest room" and fm.zones == zones
+    assert [e.kind for e in panel.edited.changes(panel.original, ctl.profile)] == ["names"]
+    assert "names" not in panel.edited.unsupported and panel.name_row.get_sensitive()
+    sent = len(vac.edits)
+    panel.save_button.emit("clicked")  # retry: only the names go
+    assert toasts[-1] == "Saved to robot" and not window.editing
+    assert [set(e) - {"mapid"} for e in vac.edits[sent:]] == [{"nsr"}]
+    assert window.test_state()["room_names"]["3"] == "Guest room"
+
+
+def check_merge_with_a_lagging_map(window, ctl, fm, toasts):
+    """The robot merged, the cloud's map never caught up: keep the robot's change, leave
+    edit mode, say the map will follow (never bring back the pre-merge session)."""
+    enter(window)
+    fm.lag = 10
+    window.tool_buttons["merge"].set_active(True)
+    window.map_view.emit("room-picked", 3)
+    window.map_view.emit("room-picked", 2)
+    respond(window._alert, "merge")
+    assert window.editing  # waiting for the map
+    for _ in range(3):
+        ctl._scheduler.fire_named("map-retry")
+    assert toasts[-1] == "Saved; the map will update shortly", toasts
+    assert not window.editing and 2 not in fm.ids()
+    fm.lag = 0
+    ctl.refresh_map()
+    assert 2 not in {r.id for r in ctl.rooms}
+
+
+def check_unknown_cleanset(window, tmp):
+    """The real robot's state: switch on, settings unreadable. Nothing to save on entry,
+    leaving asks nothing, per-room settings locked, and a zone-only save sends only zones."""
+    ctl, vac, fm = make_controller(tmp / "unknown", cleanset_unknown=True)
+    switch_controller(window, ctl)
+    enter(window)
+    panel = window.edit_panel
+    state = edit_state(window)
+    assert not state["dirty"] and not state["save_sensitive"], state
+    assert panel.info_label.get_visible() and panel.edited.use_room_settings
+    window.map_view.emit("room-picked", 1)
+    assert not panel.passes_row.get_sensitive() and panel.room_settings_row.get_sensitive()
+    ctl.act("start")  # the robot gets busy: no changes, so it leaves without asking
+    assert not window.editing and panel.alert is None
+    ctl.act("stop")
+    enter(window)
+    window.edit_panel.cancel_button.emit("clicked")
+    assert not window.editing and panel.alert is None
+    enter(window)
+    zones = MapZones(no_go=(Rect(0, 0, 900, 900),))
+    window.map_view.emit("zones-edited", zones)
+    assert edit_state(window)["save_sensitive"]
+    panel.save_button.emit("clicked")
+    assert not window.editing
+    assert [set(e) - {"mapid"} for e in vac.edits] == [{"vw"}]
+    assert fm.zones == zones and fm.room_settings is True
+    return ctl
+
+
+def check_unreadable_zones_are_read_only(window, ctl, vac):
+    from dataclasses import replace
+
+    ctl._frame = replace(ctl._frame, zones_known=False)
+    enter(window)
+    assert not window.map_view.zones_editable
+    for tool in ("no_go", "no_mop", "wall"):
+        button = window.tool_buttons[tool]
+        assert not button.get_sensitive()
+        assert button.get_tooltip_text() == (
+            "Zones on this map couldn't be read; editing them is off to protect them."
+        )
+    assert window.edit_panel.zones_label.get_visible()
+    window.map_view.emit("zones-edited", MapZones())
+    assert not window.edit_panel.dirty
+    window.edit_panel.cancel()
+    assert not window.editing
+
+
 def main() -> int:
     if not Gtk.init_check():
         print("no display", file=sys.stderr)
@@ -318,11 +447,16 @@ def main() -> int:
         check_save(window, ctl, fm, toasts)
         check_discard(window)
         check_leaves_when_the_robot_gets_busy(window, ctl, vac)
-        check_merge_and_split(window, ctl, fm, toasts)
+        check_merge_and_split(window, ctl, vac, fm, toasts)
         check_unsupported(window, ctl, vac, toasts)
         check_zones_read_only(window, vac, toasts)
         check_save_freezes_the_toggle_and_leaves_after(window, ctl, vac, toasts)
         check_no_stacked_dialogs(window, ctl)
+        check_partial_failure_keeps_the_rest(window, ctl, vac, fm, toasts)
+        check_merge_with_a_lagging_map(window, ctl, fm, toasts)
+        ctl.stop()
+        ctl = check_unknown_cleanset(window, Path(tmp))
+        check_unreadable_zones_are_read_only(window, ctl, vac)
         ctl.stop()
         window.detach()
     print("ok")

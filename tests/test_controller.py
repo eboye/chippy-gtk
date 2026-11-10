@@ -1,12 +1,19 @@
 import json
+from dataclasses import replace
 
 import pytest
 from gi.repository import GLib
 
-from chippy.controller import OFFLINE_ERROR, ThreadRunner, VacuumController, next_interval
+from chippy.controller import (
+    OFFLINE_ERROR,
+    MapNotUpdated,
+    ThreadRunner,
+    VacuumController,
+    next_interval,
+)
 from chippy.core.cloud import CloudSessionExpired
 from chippy.core.device import DeviceError
-from chippy.core.fake import FakeMap, FakeVacuum, _cell_mm, build_fake_payload
+from chippy.core.fake import FakeMap, FakeVacuum, _cell_mm, build_fake_payload, fake_saved_payload
 from chippy.core.mapedit import Line, MapZones, Rect
 from chippy.core.profiles import R2209
 from chippy.store import MapCache, RoomStore
@@ -596,7 +603,7 @@ def edit_ctl(parts, cleanset=None, map_id=7, fetch_cleanset=None, **kw):
     ctl, sched, events = make(
         parts,
         vacuum=vac,
-        fetch=lambda: with_map_id(build_fake_payload(fake_map=fm), map_id),
+        fetch=lambda: with_map_id(fake_saved_payload(fm), map_id),
         fetch_cleanset=fetch_cleanset or (lambda: cleanset),
         **kw,
     )
@@ -629,8 +636,8 @@ def test_begin_edit_defaults_without_cleanset(parts):
     session, error = out[0]
     assert error is None
     assert session.settings_known is False
-    assert session.order == [1, 2, 3, 4]
-    assert set(session.settings) == {1, 2, 3, 4}
+    assert session.order == [1, 2, 3, 4, 5]  # 5 is hidden, but still the robot's room
+    assert set(session.settings) == {1, 2, 3, 4, 5}
     assert session.names[1] == "Living room"
     assert session.use_room_settings is False
     assert session.map_id == 7
@@ -643,7 +650,7 @@ def test_begin_edit_uses_cleanset(parts):
     ctl.begin_edit(lambda session, error: out.append((session, error)))
     session = out[0][0]
     assert session.settings_known is True
-    assert session.order == [2, 1, 3, 4]
+    assert session.order == [2, 1, 3, 4, 5]
     assert session.settings[1].passes == 2
 
 
@@ -659,8 +666,8 @@ def test_save_edit_sends_zones_then_names_clears_local_and_refreshes(parts):
     edited.names[2] = "Cuisine"
     saved, done = [], []
     ctl.connect("edit-saved", lambda _c: saved.append(1))
-    ctl.save_edit(original, edited, lambda err, kind: done.append((err, kind)))
-    assert done == [(None, None)]
+    ctl.save_edit(original, edited, lambda *args: done.append(args))
+    assert done == [(None, None, ["zones", "names"])]
     assert saved == [1]
     assert [set(e) - {"mapid"} for e in vac.edits] == [{"vw"}, {"nsr"}]
     assert 2 not in parts["rooms"].names
@@ -668,13 +675,14 @@ def test_save_edit_sends_zones_then_names_clears_local_and_refreshes(parts):
     assert {r.id: r.name for r in ctl.rooms}[2] == "Cuisine"
 
 
-def test_save_edit_stops_at_first_failure(parts):
+@pytest.mark.parametrize(("code", "unsupported"), [(-4004, True), (-1, False), (None, False)])
+def test_save_edit_stops_at_first_failure(parts, code, unsupported):
     ctl, vac, fm, _ev = edit_ctl(parts)
     real = vac.update_map
 
     def flaky(payload):
         if "nsr" in payload:
-            raise DeviceError("nope")
+            raise DeviceError("nope", code=code)
         real(payload)
 
     vac.update_map = flaky
@@ -687,11 +695,13 @@ def test_save_edit_stops_at_first_failure(parts):
     edited.settings = {k: type(v)("turbo", v.water, v.passes) for k, v in edited.settings.items()}
     saved, done = [], []
     ctl.connect("edit-saved", lambda _c: saved.append(1))
-    ctl.save_edit(original, edited, lambda err, kind: done.append((err, kind)))
+    ctl.save_edit(original, edited, lambda *args: done.append(args))
     assert done[0][1] == "names"
-    assert done[0][0] is not None
+    assert done[0][0] is not None and done[0][2] == []
     assert vac.edits == []
-    assert "names" in edited.unsupported
+    # only "no such action/property" codes mean the model can't do it
+    assert ("names" in edited.unsupported) is unsupported
+    assert edited.names[1] == "Salon"  # the staged edit is kept either way
     assert saved == []
 
 
@@ -725,7 +735,9 @@ def test_split_room_names_new_room(parts):
     assert parts["rooms"].names == {new_ids.pop(): "Living room 2"}  # from the robot's name
 
 
-def test_merge_refresh_failure_reports_error(parts):
+def test_merge_refresh_failure_is_pending_not_an_error(parts):
+    """The robot merged; the cloud never showed it: retried, then MapNotUpdated (not a
+    failure that would bring the pre-merge session back)."""
     fm = FakeMap()
     vac = FakeVacuum(fake_map=fm)
     calls = []
@@ -736,13 +748,18 @@ def test_merge_refresh_failure_reports_error(parts):
         calls.append(1)
         return build_fake_payload(fake_map=fm)
 
-    ctl, _s, _e = make(parts, vacuum=vac, fetch=fetch)
+    ctl, sched, _e = make(parts, vacuum=vac, fetch=fetch)
     ctl.start()
-    parts["rooms"].rename(2, "Keep")
+    parts["rooms"].rename(4, "Gone")
     done = []
-    ctl.merge_rooms(ctl._map_id, 1, 2, done.append)
-    assert len(done) == 1 and isinstance(done[0], RuntimeError)
-    assert parts["rooms"].names[2] == "Keep"
+    ctl.merge_rooms(ctl._map_id, 2, 4, done.append)
+    delays = []
+    while not done:
+        delays.append(sched.fire_named("map-retry"))
+    assert delays == [2, 4, 6]
+    assert len(done) == 1 and isinstance(done[0], MapNotUpdated)
+    assert str(done[0]) == "Saved; the map will update shortly"
+    assert 4 not in parts["rooms"].names  # the robot merged it: its name goes
 
 
 def test_edit_callbacks_after_stop(parts):
@@ -753,7 +770,7 @@ def test_edit_callbacks_after_stop(parts):
     ctl.stop()
     got = []
     ctl.begin_edit(lambda s, e: got.append((s, e)))
-    ctl.save_edit(original, original.copy(), lambda e, k: got.append((e, k)))
+    ctl.save_edit(original, original.copy(), lambda e, k, d: got.append((e, k)))
     ctl.merge_rooms(1, 1, 2, lambda e: got.append(e))
     ctl.split_room(1, 1, Line(0, 0, 1, 1), lambda e: got.append(e))
     assert len(got) == 4
@@ -774,7 +791,7 @@ def test_transport_error_stops_save_but_is_not_unsupported(parts):
     edited = out[0].copy()
     edited.names[1] = "Salon"
     done = []
-    ctl.save_edit(out[0], edited, lambda err, kind: done.append((err, kind)))
+    ctl.save_edit(out[0], edited, lambda *args: done.append(args))
     assert isinstance(done[0][0], TimeoutError) and done[0][1] == "names"
     assert edited.unsupported == set()
 
@@ -812,11 +829,11 @@ def test_stop_with_save_in_flight_calls_back_once(parts):
     holder = HoldingRunner()
     ctl._runner = holder
     done = []
-    ctl.save_edit(out[0], edited, lambda err, kind: done.append((err, kind)))
+    ctl.save_edit(out[0], edited, lambda *args: done.append(args))
     assert holder.jobs and not done
     func, callback = holder.jobs[0]
     ctl.stop()
-    assert len(done) == 1 and str(done[0][0]) == "Chippy has stopped" and done[0][1] is None
+    assert done == [(done[0][0], None, [])] and str(done[0][0]) == "Chippy has stopped"
     callback(func(), None)  # a late delivery is ignored
     assert len(done) == 1
 
@@ -831,3 +848,198 @@ def test_stop_with_begin_and_merge_in_flight_calls_back_once(parts):
     ctl.stop()
     assert len(begun) == 1 and begun[0][0] is None
     assert len(merged) == 1 and str(merged[0]) == "Chippy has stopped"
+
+
+def test_unknown_settings_with_the_switch_on_save_only_what_changed(parts):
+    """The real robot: "Use room settings" on, cleanset unreadable. The session starts clean
+    and a zone-only save sends only the zones (never customeClean defaults)."""
+    ctl, vac, fm, _ev = edit_ctl(parts, cleanset=None)
+    fm.room_settings = True
+    ctl.poke()
+    out = []
+    ctl.begin_edit(lambda s, e: out.append(s))
+    original = out[0]
+    assert original.use_room_settings and not original.settings_known
+    assert original.copy().changes(original, R2209) == []  # not dirty at the start
+    edited = original.copy()
+    edited.zones = MapZones(no_go=(Rect(0, 0, 500, 500),))
+    done = []
+    ctl.save_edit(original, edited, lambda *args: done.append(args))
+    assert done == [(None, None, ["zones"])]
+    assert [set(e) - {"mapid"} for e in vac.edits] == [{"vw"}]
+
+
+def test_session_covers_every_robot_room_but_no_local_only_id(parts):
+    ctl, _vac, _fm, _ev = edit_ctl(parts, cleanset={"1": [3, 3, 2, 2, -1]})
+    parts["rooms"].rename(42, "Ghost")  # a name for a room the robot doesn't have
+    parts["rooms"].rename(5, "Nook")
+    ctl._rebuild_rooms()
+    assert 42 in {r.id for r in ctl.rooms} and 5 not in {r.id for r in ctl.visible_rooms()}
+    out = []
+    ctl.begin_edit(lambda s, e: out.append(s))
+    session = out[0]
+    assert set(session.settings) == set(session.names) == {1, 2, 3, 4, 5}
+    assert sorted(session.order) == [1, 2, 3, 4, 5]
+    assert session.names[5] == "Nook"  # the displayed name
+    edited = session.copy()
+    edited.settings[1] = type(edited.settings[1])("turbo", "high", 3)
+    edited.order = [2, 1, 3, 4, 5]
+    steps = {e.kind: e.payload for e in edited.changes(session, R2209)}
+    assert [row[0] for row in steps["settings"]["customeClean"]] == [1, 2, 3, 4, 5]
+    assert steps["order"] == {"cleanOrder": [2, 1, 3, 4, 5]}
+
+
+def test_can_edit_needs_a_poll_and_the_room_settings_switch(parts):
+    class SilentVacuum(FakeVacuum):
+        def __init__(self):
+            super().__init__()
+            self.fail = True
+
+        def poll(self):
+            if self.fail:
+                raise OSError("no answer")
+            return super().poll()
+
+    vac = SilentVacuum()
+    ctl, _s, _e = make(parts, vacuum=vac)
+    ctl.start()
+    assert ctl.current_frame is not None and not ctl.can_edit  # no successful poll yet
+    vac.fail = False
+    ctl.poke()
+    assert ctl.can_edit
+    ctl.snapshot = replace(ctl.snapshot, room_settings=None)
+    assert not ctl.can_edit  # the switch's value is unknown
+
+
+def test_merge_waits_for_the_map_to_show_it(parts):
+    ctl, vac, fm, _ev = edit_ctl(parts)
+    fm.lag = 1  # the first fetch after the edit still has the old map
+    done = []
+    ctl.merge_rooms(ctl._map_id, 2, 4, done.append)
+    assert done == [] and 4 in {r.id for r in ctl.rooms}
+    assert ctl._scheduler.fire_named("map-retry") == 2
+    assert done == [None] and 4 not in {r.id for r in ctl.rooms}
+
+
+def test_split_waits_for_the_new_room_and_names_it(parts):
+    ctl, vac, fm, _ev = edit_ctl(parts)
+    fm.lag = 2
+    xs = sorted({c for row in fm.layout for c, ch in enumerate(row) if ch == "1"})
+    mid = (xs[0] + xs[-1] + 1) / 2
+    (x, y1), (_x, y2) = _cell_mm(mid, 0), _cell_mm(mid, len(fm.layout))
+    done = []
+    ctl.split_room(ctl._map_id, 1, Line(x, y2, x, y1), done.append)
+    assert ctl._scheduler.fire_named("map-retry") == 2
+    assert done == []
+    assert ctl._scheduler.fire_named("map-retry") == 4
+    assert done == [None]
+    assert parts["rooms"].names == {6: "Living room 2"}
+
+
+def test_save_waits_for_zones_and_names_then_drops_the_local_names(parts):
+    ctl, vac, fm, _ev = edit_ctl(parts)
+    fm.lag = 1
+    out = []
+    ctl.begin_edit(lambda s, e: out.append(s))
+    edited = out[0].copy()
+    edited.zones = MapZones(no_go=(Rect(0, 0, 500, 500),))
+    edited.names[3] = " Guest room "
+    done = []
+    ctl.save_edit(out[0], edited, lambda *args: done.append(args))
+    assert done == []
+    # meanwhile the new name shows from the local store
+    assert {r.id: r.name for r in ctl.rooms}[3] == "Guest room"
+    assert parts["rooms"].names[3] == "Guest room"
+    ctl._scheduler.fire_named("map-retry")
+    assert done == [(None, None, ["zones", "names"])]
+    assert 3 not in parts["rooms"].names and ctl.cloud_names[3] == "Guest room"
+
+
+def test_save_that_never_shows_is_pending_but_saved(parts):
+    ctl, vac, fm, events = edit_ctl(parts)
+    fm.lag = 10
+    out = []
+    ctl.begin_edit(lambda s, e: out.append(s))
+    edited = out[0].copy()
+    edited.names[3] = "Guest room"
+    saved, done = [], []
+    ctl.connect("edit-saved", lambda _c: saved.append(1))
+    ctl.save_edit(out[0], edited, lambda *args: done.append(args))
+    while not done:
+        ctl._scheduler.fire_named("map-retry")
+    assert isinstance(done[0][0], MapNotUpdated) and done[0][1:] == (None, ["names"])
+    assert saved == [1]
+    assert parts["rooms"].names[3] == "Guest room"  # kept until the robot's map has it
+
+
+def test_partial_failure_reports_the_completed_steps(parts):
+    ctl, vac, fm, _ev = edit_ctl(parts)
+    real = vac.update_map
+
+    def refuse_names(payload):
+        if "nsr" in payload:
+            raise DeviceError("the robot refused the map change (code -1)", code=-1)
+        real(payload)
+
+    vac.update_map = refuse_names
+    out = []
+    ctl.begin_edit(lambda s, e: out.append(s))
+    edited = out[0].copy()
+    edited.zones = MapZones(no_go=(Rect(0, 0, 500, 500),))
+    edited.names[3] = "Guest room"
+    done = []
+    ctl.save_edit(out[0], edited, lambda *args: done.append(args))
+    error, failed, done_kinds = done[0]
+    assert failed == "names" and done_kinds == ["zones"] and error.code == -1
+    assert fm.zones == edited.zones
+    assert edited.unsupported == set()
+
+
+def test_save_stops_when_the_robot_starts_cleaning(parts):
+    ctl, vac, fm, _ev = edit_ctl(parts)
+    real = vac.update_map
+
+    def zones_then_clean(payload):
+        real(payload)
+        vac.start()  # someone starts a clean from the phone
+        ctl.poke()
+
+    vac.update_map = zones_then_clean
+    out = []
+    ctl.begin_edit(lambda s, e: out.append(s))
+    edited = out[0].copy()
+    edited.zones = MapZones(no_go=(Rect(0, 0, 500, 500),))
+    edited.names[3] = "Guest room"
+    done = []
+    ctl.save_edit(out[0], edited, lambda *args: done.append(args))
+    error, failed, done_kinds = done[0]
+    assert str(error) == "the robot started cleaning"
+    assert failed == "names" and done_kinds == ["zones"]
+    assert [set(e) - {"mapid"} for e in vac.edits] == [{"vw"}]
+
+
+def test_an_older_map_answer_never_replaces_a_newer_one(parts):
+    runner = DeferredRunner()
+    fm = FakeMap()
+    ctl = VacuumController(
+        FakeVacuum(fake_map=fm),
+        R2209,
+        parts["rooms"],
+        parts["map_cache"],
+        lambda: build_fake_payload(fake_map=fm),
+        runner=runner,
+        scheduler=ManualScheduler(),
+    )
+    ctl.refresh_map()  # old map, fetched before the change ...
+    old_func, old_callback = runner.jobs.pop()
+    old_result = old_func()
+    fm.zones = MapZones(no_go=(Rect(0, 0, 500, 500),))
+    got = []
+    ctl.refresh_map(lambda frame, error: got.append(frame))  # new map
+    new = runner.jobs.pop()
+    func, callback = new
+    callback(func(), None)
+    old_callback(old_result, None)  # ... but answered last
+    assert ctl.current_frame.zones == fm.zones
+    assert parts["map_cache"].load() == build_fake_payload(fake_map=fm)
+    assert got[0].zones == fm.zones

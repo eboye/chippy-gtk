@@ -22,6 +22,7 @@ from chippy.core.profiles import R2209  # noqa: E402
 from chippy.ui.editpanel import (  # noqa: E402
     NOT_SUPPORTED,
     SETTINGS_UNKNOWN,
+    ZONES_UNKNOWN,
     EditPanel,
     alert_buttons,
     confirm,
@@ -173,19 +174,70 @@ def test_use_room_settings_switch():
     assert panel.dirty
 
 
-def test_unsupported_kinds_disable_their_controls_and_revert_them():
+def test_unsupported_kinds_disable_their_controls_but_keep_the_edits():
     panel, _ = _panel()
     panel.pick_room(1)
     panel.name_row.set_text("Lounge")
-    panel.passes_row.set_value(2)
     panel.edited.unsupported.add("names")
     panel.apply_unsupported()
     assert not panel.name_row.get_sensitive()
     assert panel.name_row.get_tooltip_text() == NOT_SUPPORTED == "Not supported on this model"
-    assert panel.edited.names == panel.original.names  # a failing kind is not resent
+    assert panel.edited.names[1] == "Lounge"  # kept, though it can't be sent
+    assert panel.name_row.get_text() == "Lounge"
+    assert not panel.dirty  # nothing that can be sent
+    panel.passes_row.set_value(2)
     assert panel.edited.settings[1].passes == 2
     assert panel.passes_row.get_sensitive()
-    assert panel.name_row.get_text() == "Living room"
+    assert panel.dirty
+
+
+def test_unknown_settings_lock_the_room_settings_but_not_the_switch():
+    panel, _ = _panel(settings_known=False)
+    panel.pick_room(1)
+    for row in (panel.suction_row, panel.water_row, panel.passes_row):
+        assert not row.get_sensitive()
+        assert row.get_tooltip_text() == SETTINGS_UNKNOWN
+    assert panel.info_label.get_visible()
+    assert panel.room_settings_row.get_sensitive()
+    assert panel.name_row.get_sensitive()
+    panel.passes_row.set_value(3)  # e.g. a stray signal: ignored
+    assert panel.edited.settings == panel.original.settings
+    assert not panel.dirty and not panel.save_button.get_sensitive()
+    panel.room_settings_row.set_active(True)
+    assert panel.dirty
+
+
+def test_unreadable_zones_are_read_only_with_a_hint():
+    window = Adw.Window()
+    panel = EditPanel()
+    window.set_content(panel)
+    panel.build_actions()
+    original = replace(_session(), zones_known=False)
+    panel.set_session(original, original.copy(), R2209)
+    assert panel.zones_label.get_visible()
+    assert panel.zones_label.get_label() == ZONES_UNKNOWN
+    assert ZONES_UNKNOWN == (
+        "Zones on this map couldn't be read; editing them is off to protect them."
+    )
+    panel.set_zone(("wall", 0))
+    assert not panel.zone_delete.get_sensitive()
+    panel.set_zones(MapZones())
+    panel.delete_zone()
+    assert panel.edited.zones == original.zones and not panel.dirty
+    panel, _ = _panel()
+    assert not panel.zones_label.get_visible() and panel.zone_delete.get_sensitive()
+    assert panel.zone_delete.get_tooltip_text() == "Delete"
+
+
+def test_mark_saved_moves_completed_kinds_into_the_original():
+    panel, _ = _panel()
+    panel.pick_room(2)
+    panel.name_row.set_text("Pantry")
+    panel.set_zones(MapZones())
+    assert {e.kind for e in panel.edited.changes(panel.original, R2209)} == {"zones", "names"}
+    panel.mark_saved(["zones"])
+    assert [e.kind for e in panel.edited.changes(panel.original, R2209)] == ["names"]
+    assert panel.edited.names[2] == "Pantry" and panel.dirty
 
 
 def test_zones_are_read_only_when_the_robot_refused_them():
@@ -258,3 +310,11 @@ def test_loading_state():
     assert panel.edited is None
     assert panel.content_stack.get_visible_child_name() == "loading"
     assert not panel.save_button.get_sensitive()
+
+
+def test_order_position_counts_only_the_rooms_on_the_map():
+    panel, _ = _panel()
+    original = replace(_session(), order=[3, 9, 1, 2], names={1: "A", 2: "B", 3: "C", 9: "Nook"})
+    panel.set_session(original, original.copy(), R2209, shown={1, 2, 3})
+    panel.pick_room(1)
+    assert panel.order_row.get_subtitle() == "2 of 3"  # hidden room 9 keeps its slot

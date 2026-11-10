@@ -25,8 +25,8 @@ from .core.fake import (  # noqa: E402
     FakeCloud,
     FakeMap,
     FakeVacuum,
-    build_fake_payload,
     fake_live_payload,
+    fake_saved_payload,
 )
 from .core.live import HISTORY_LIMIT, LIVE_PROPERTY, LiveTrack, latest_cleanset  # noqa: E402
 from .core.profiles import UnsupportedModel, profile_for  # noqa: E402
@@ -273,10 +273,15 @@ class ChippyApp(Adw.Application):
         if self.fake:
             fake_fault = os.environ.get("CHIPPY_FAKE_FAULT", "")  # testing: a reported fault
             fake_map = FakeMap()  # one map shared by the robot, the map fetch and live frames
+            lag = os.environ.get("CHIPPY_FAKE_MAP_LAG", "")  # testing: the cloud's map lags
+            fake_map.lag = int(lag) if lag.isdecimal() else 0
+            # testing: the robot's room settings can't be read, with "Use room settings" on
+            cleanset_unknown = os.environ.get("CHIPPY_FAKE_CLEANSET_UNKNOWN") == "1"
+            fake_map.room_settings = cleanset_unknown
             vacuum = FakeVacuum(
                 profile, int(fake_fault) if fake_fault.isdigit() else 0, fake_map=fake_map
             )
-            fetch = functools.partial(build_fake_payload, fake_map=fake_map)
+            fetch = functools.partial(fake_saved_payload, fake_map)
             if os.environ.get("CHIPPY_FAKE_CLOUD_EXPIRED") == "1":  # testing: a refused session
 
                 def fetch():
@@ -288,7 +293,7 @@ class ChippyApp(Adw.Application):
                 return fake_live_payload(vacuum.live_step, fake_map)
 
             def fetch_cleanset():
-                return fake_map.cleanset
+                return None if cleanset_unknown else fake_map.cleanset
 
             rooms = RoomStore(legacy=Path(self._fake_root or "/nonexistent") / "no-legacy.json")
         else:
