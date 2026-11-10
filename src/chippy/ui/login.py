@@ -12,7 +12,13 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, GLib, GObject, Gtk  # noqa: E402
 
 from ..core.accounts import credentials_for, discover_vacuums  # noqa: E402
-from ..core.cloud import CaptchaRequired, CloudUnreachable, TwoFactorRequired  # noqa: E402
+from ..core.cloud import (  # noqa: E402
+    CaptchaRequired,
+    CloudUnreachable,
+    QrLoginCancelled,
+    QrLoginExpired,
+    TwoFactorRequired,
+)
 
 ATTEMPTS = 3
 
@@ -39,6 +45,7 @@ class LoginFlow:
         self._username = self._password = ""
         self._captcha_tries = self._code_tries = 0
         self._two_factor_url = ""
+        self._qr_cancel: dict | None = None  # {"set": bool} of the QR wait in progress
         self.busy = False
         self.code_locked = False
 
@@ -63,6 +70,48 @@ class LoginFlow:
         self._captcha_tries = self._code_tries = 0
         self.code_locked = False
         self._login()
+
+    def sign_in_qr(self) -> None:
+        """QR sign-in: page `qr` with the code, then device discovery once approved."""
+        if self.busy and self._qr_cancel is None:
+            return  # a password sign-in is in flight
+        self.cancel_qr()  # a previous code's wait, if any
+        self._start()
+        self._username = self._password = ""
+        self._cloud = cloud = self._factory("", "")
+        cancel = {"set": False}
+        self._qr_cancel = cancel
+
+        def started(qr, error):
+            if cancel["set"]:
+                return
+            if error is not None:
+                self._qr_cancel = None
+                self._error("qr", _message(error))
+                return
+            self._on_page("qr", {"image": qr.image, "url": qr.login_url})
+            self.busy = True  # waiting for approval: other submissions stay ignored
+            self._runner.run(lambda: cloud.wait_qr_login(qr, lambda: cancel["set"]), approved)
+
+        def approved(_r, error):
+            if cancel["set"] or isinstance(error, QrLoginCancelled):
+                return
+            self._qr_cancel = None
+            if isinstance(error, QrLoginExpired):
+                self._on_page("error", {"page": "qr", "message": str(error), "expired": True})
+            elif error is not None:
+                self._error("qr", _message(error))
+            else:
+                self._discover()
+
+        self._runner.run(cloud.start_qr_login, started)
+
+    def cancel_qr(self) -> None:
+        """Stop waiting for a QR approval (Back, close, or a new code)."""
+        if self._qr_cancel is not None:
+            self._qr_cancel["set"] = True
+            self._qr_cancel = None
+            self.busy = False
 
     def _login(self) -> None:
         self._runner.run(self._cloud.login, self._after_login)

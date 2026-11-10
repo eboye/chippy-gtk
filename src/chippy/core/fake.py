@@ -3,13 +3,21 @@
 import base64
 import json
 import math
+import os
 import struct
+import time
 import zlib
 from dataclasses import replace
 
 from micloud.micloudexception import MiCloudAccessDenied
 
-from .cloud import CaptchaRequired, TwoFactorRequired
+from .cloud import (
+    CaptchaRequired,
+    QrLogin,
+    QrLoginCancelled,
+    QrLoginExpired,
+    TwoFactorRequired,
+)
 from .device import DeviceError
 from .profiles import R2209
 from .state import Snapshot, name_to_value
@@ -251,6 +259,25 @@ class FakeCloud:
 
     def fetch_captcha(self, url: str) -> bytes:
         return _png(120, 40, (220, 220, 220))
+
+    def start_qr_login(self) -> QrLogin:
+        return QrLogin(
+            _png(160, 160, (30, 30, 30)), "https://account.xiaomi.com/fake-qr", "fake://lp", 300
+        )
+
+    def wait_qr_login(self, qr, cancelled, clock=time.monotonic, sleep=time.sleep) -> None:
+        """Approves after CHIPPY_FAKE_QR_DELAY seconds (default 3), or expires with
+        CHIPPY_FAKE_QR_EXPIRE=1; checks `cancelled` every 0.2 s like a real wait would."""
+        delay = float(os.environ.get("CHIPPY_FAKE_QR_DELAY", "3"))
+        end = clock() + delay
+        while clock() < end:
+            if cancelled():
+                raise QrLoginCancelled()
+            sleep(0.2)
+        if cancelled():
+            raise QrLoginCancelled()
+        if os.environ.get("CHIPPY_FAKE_QR_EXPIRE") == "1":
+            raise QrLoginExpired()
 
     def send_email_code(self, url: str) -> None:
         self._code_sent = True

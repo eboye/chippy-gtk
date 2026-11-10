@@ -150,3 +150,56 @@ def test_captcha_gives_up_after_three_tries():
     for _ in range(3):
         flow.submit_captcha("bad")
     assert pages[-1][0] == "error" and "captcha" in pages[-1][1]["message"].lower()
+
+
+def test_qr_sign_in_reaches_devices_and_stores_no_password(monkeypatch):
+    monkeypatch.setenv("CHIPPY_FAKE_QR_DELAY", "0")
+    pages = []
+    flow = LoginFlow(FakeCloud, InlineRunner(), lambda page, data: pages.append((page, data)))
+    flow.sign_in_qr()
+    names = [p for p, _d in pages]
+    assert names[:2] == ["qr", "devices"]
+    qr = pages[0][1]
+    assert qr["image"].startswith(b"\x89PNG") and qr["url"].startswith("https://")
+    flow.choose(pages[-1][1]["vacuums"][0])
+    creds = pages[-1][1]["credentials"]
+    assert creds.username == "" and creds.password == ""
+    assert creds.cloud_session["user_id"]
+
+
+def test_qr_expiry_offers_a_new_code(monkeypatch):
+    monkeypatch.setenv("CHIPPY_FAKE_QR_DELAY", "0")
+    monkeypatch.setenv("CHIPPY_FAKE_QR_EXPIRE", "1")
+    pages = []
+    flow = LoginFlow(FakeCloud, InlineRunner(), lambda page, data: pages.append((page, data)))
+    flow.sign_in_qr()
+    assert pages[-1] == ("error", {"page": "qr", "message": "The code expired.", "expired": True})
+    assert not flow.busy
+    monkeypatch.delenv("CHIPPY_FAKE_QR_EXPIRE")
+    flow.sign_in_qr()  # "Show a new code"
+    assert pages[-1][0] == "devices"
+
+
+def test_qr_cancel_drops_the_late_answer(monkeypatch):
+    monkeypatch.setenv("CHIPPY_FAKE_QR_DELAY", "0")
+    pages, runner = [], DeferredRunner()
+    flow = LoginFlow(FakeCloud, runner, lambda page, data: pages.append((page, data)))
+    flow.sign_in_qr()
+    func, callback = runner.pending.pop(0)  # only the start: → qr page, the wait is queued
+    InlineRunner().run(func, callback)
+    assert pages[-1][0] == "qr" and len(runner.pending) == 1
+    flow.cancel_qr()
+    runner.finish()  # the wait sees the cancel flag
+    assert pages[-1][0] == "qr" and not flow.busy
+
+
+def test_qr_start_failure_is_reported_on_the_qr_page(monkeypatch):
+    class Down(FakeCloud):
+        def start_qr_login(self):
+            raise CloudUnreachable()
+
+    pages = []
+    flow = LoginFlow(Down, InlineRunner(), lambda page, data: pages.append((page, data)))
+    flow.sign_in_qr()
+    assert pages[-1][0] == "error" and pages[-1][1]["page"] == "qr"
+    assert "reach Xiaomi" in pages[-1][1]["message"] and not flow.busy
