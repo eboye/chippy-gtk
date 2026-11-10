@@ -354,3 +354,26 @@ def test_map_file_url_error_does_not_echo_the_reply(monkeypatch):
     with pytest.raises(CloudError) as caught:
         cloud.map_file_url("obj/1", "de")
     assert "secret123" not in str(caught.value)
+
+
+def test_cloud_map_with_a_qr_session_and_no_password(monkeypatch):
+    fetcher, record = _cloud_map(monkeypatch, ["https://files/1"])
+
+    class QrCreds(_Creds):
+        username = password = ""
+        cloud_session = {"user_id": "4242", "service_token": "t", "ssecurity": "s"}
+
+    fetcher._creds = QrCreds()
+    assert fetcher.fetch_object_payload("obj/1") == b"map"
+    assert record["logins"] == 0
+
+
+def test_cloud_map_with_neither_session_nor_password_asks_to_sign_in():
+    from chippy.core.cloud import CloudMap
+
+    class Nothing(_Creds):
+        username = password = ""
+        cloud_session = {}
+
+    with pytest.raises(CloudError, match="sign in again"):
+        CloudMap(Nothing()).fetch_object_payload("obj/1")

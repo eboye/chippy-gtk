@@ -20,6 +20,14 @@ from ..shellext import (  # noqa: E402
 )
 
 
+def account_label(creds) -> str:
+    """The account row's subtitle: the email/ID, or the user id for a QR sign-in."""
+    if creds.username:
+        return creds.username
+    user_id = (creds.cloud_session or {}).get("user_id")
+    return f"Xiaomi account {user_id}" if user_id else "Xiaomi account"
+
+
 class PreferencesDialog(Adw.PreferencesDialog):
     __gtype_name__ = "ChippyPreferences"
 
@@ -75,7 +83,7 @@ class PreferencesDialog(Adw.PreferencesDialog):
             group.add(
                 Adw.ActionRow(
                     title="Signed in as",
-                    subtitle=GLib.markup_escape_text(creds.username),
+                    subtitle=GLib.markup_escape_text(account_label(creds)),
                     subtitle_selectable=True,
                 )
             )

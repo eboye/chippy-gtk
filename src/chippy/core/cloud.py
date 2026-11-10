@@ -536,7 +536,10 @@ class CloudMap:
         return response.content
 
     def _need_login(self) -> None:
-        if not self._creds.username or not self._creds.password:
+        # A QR sign-in stores only the session; a password sign-in stores both.
+        session = getattr(self._creds, "cloud_session", None) or {}
+        has_session = bool(session.get("user_id") and session.get("service_token"))
+        if not has_session and not (self._creds.username and self._creds.password):
             raise CloudError("no Xiaomi login stored; sign in again")
 
     def _map_url(self, object_name: str) -> str:

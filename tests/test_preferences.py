@@ -108,3 +108,12 @@ def test_ip_change_is_validated_and_skipped_when_unchanged(tmp_path):
     [(creds, on_done)] = app.signed_in
     assert creds.ip == "192.168.1.20" and app.credentials.ip == "127.0.0.1"
     on_done(None)  # the toast only comes once the save is done
+
+
+def test_account_label_for_password_and_qr_sign_ins():
+    from chippy.ui.preferences import account_label
+
+    base = dict(ip="1", token="t", did="d", model="m", country="de")
+    assert account_label(Credentials(**base, username="me@example.com")) == "me@example.com"
+    qr = Credentials(**base, cloud_session={"user_id": "4242"})
+    assert account_label(qr) == "Xiaomi account 4242"
