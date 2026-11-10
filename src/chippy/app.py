@@ -420,7 +420,7 @@ class ChippyApp(Adw.Application):
             version=VERSION,
             developer_name="eboye",
             license_type=Gtk.License.GPL_3_0,
-            website="https://github.com/eboye/Chippy-gtk",
+            website="https://github.com/eboye/chippy-gtk",
         ).present(self.window)
 
     def _preferences(self) -> None:

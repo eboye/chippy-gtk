@@ -23,7 +23,7 @@
   </description>
 
   <launchable type="desktop-id">io.github.eboye.Chippy.desktop</launchable>
-  <url type="homepage">https://github.com/eboye/Chippy-gtk</url>
+  <url type="homepage">https://github.com/eboye/chippy-gtk</url>
 
   <developer id="io.github.eboye">
     <name>eboye</name>
