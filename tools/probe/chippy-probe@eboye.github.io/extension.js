@@ -406,6 +406,83 @@ export default class ChippyProbe extends Extension {
             asked2 && await this._waitFor(() => edited().mode === false, 5000),
             `asked=${Boolean(asked2)} ${JSON.stringify(edited())}`);
         await this._shot('edit-done');
+
+        await this._editRename(edited);
+        await this._editSplit(edited, roomCount);
+    }
+
+    // Edit mode again, Select tool; true once the toolbar is up.
+    async _reenterEdit(edited) {
+        await this._waitFor(() => edited().mode === false && !edited().alert, 5000);
+        await this._clickApp(edited().buttons.edit);
+        const on = await this._waitFor(
+            () => edited().mode === true && edited().buttons.merge !== null, 8000);
+        await this._sleep(1000);
+        return on;
+    }
+
+    // Rename a room on the robot: pick it by its label, type into the Name row, save; the
+    // label outside edit mode must show the robot's new name (the fake map lags one fetch).
+    async _editRename(edited) {
+        const name = 'Guest room';
+        const on = await this._reenterEdit(edited);
+        await this._chooseTool('select');
+        await this._clickApp(this._state().rooms['3']);
+        const picked = await this._waitFor(
+            () => edited().room === 3 && edited().buttons.name !== null, 3000);
+        let saved = false;
+        let shown = false;
+        if (on && picked) {
+            await this._clickApp(edited().buttons.name);
+            await this._key(Clutter.KEY_a, [Clutter.KEY_Control_L]);
+            await this._type(name);
+            await this._sleep(400);
+            await this._shot('edit-rename');
+            if (edited().dirty && edited().save_sensitive) {
+                await this._clickApp(edited().buttons.save);
+                saved = await this._waitFor(() => edited().mode === false, 15000);
+                shown = saved && await this._waitFor(
+                    () => this._state().room_names?.['3'] === name, 10000);
+            }
+        }
+        await this._sleep(500);
+        await this._shot('edit-renamed');
+        this._check('rename-saved', on && picked && saved && shown,
+            `on=${on} picked=${picked} saved=${saved} shown=${shown} ` +
+            `names=${JSON.stringify(this._state().room_names)} ${JSON.stringify(edited())}`);
+    }
+
+    // Split a room: Split tool, click the room, drag a line fully across it (top to bottom,
+    // from above its top edge to below its bottom edge), confirm by clicking Split.
+    async _editSplit(edited, roomCount) {
+        const on = await this._reenterEdit(edited);
+        await this._chooseTool('split');
+        const before = roomCount();
+        const base = this._state().room_names['1'];
+        const [x, y] = this._state().rooms['1'];
+        await this._clickApp([x, y]);
+        // room 1 is 8 cells tall around its label: 6 cells out each way leaves it
+        const reach = 6 * this._state().scale;
+        await this._dragApp([x, y - reach], [x, y + reach], 16);
+        const asked = await this._waitFor(() => edited().alert?.heading === `Split ${base}?`, 4000);
+        await this._sleep(500);
+        await this._shot('edit-split-ask');
+        let grew = false;
+        if (asked) {
+            await this._clickApp(edited().alert.buttons.split);
+            grew = await this._waitFor(() => roomCount() === before + 1, 15000);
+        }
+        const names = () => Object.values(this._state().room_names ?? {});
+        const named = grew && await this._waitFor(() => names().includes(`${base} 2`), 5000);
+        await this._waitFor(() => edited().mode === true && !edited().alert, 5000);
+        await this._sleep(1000);
+        await this._shot('edit-split');
+        this._check('split-done', on && asked && grew && named,
+            `on=${on} asked=${asked} before=${before} now=${roomCount()} ` +
+            `names=${JSON.stringify(names())} hint=${edited().hint} ${JSON.stringify(edited())}`);
+        // no unsaved changes: leaving needs no confirmation
+        await this._clickApp(edited().buttons.cancel);
+        await this._waitFor(() => edited().mode === false, 5000);
     }
 
     async _mainScenario(opened) {

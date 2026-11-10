@@ -43,6 +43,8 @@ if [ "${1:-}" = "--inner" ]; then
     dconf write /org/gnome/desktop/interface/color-scheme "'$scheme_value'"
     case "$CN_SCENARIO" in signin|qr) export CHIPPY_FAKE_SIGNED_OUT=1 ;; esac
     if [ "$CN_SCENARIO" = qr ]; then export CHIPPY_FAKE_QR_DELAY=3; fi
+    # edit: the fake cloud serves the old map once after each edit, like the real one lags
+    if [ "$CN_SCENARIO" = edit ]; then export CHIPPY_FAKE_MAP_LAG=1; fi
     export CHIPPY_FAKE_HOME="$CN_NEST_ROOT_RESOLVED/fake-home"
     # On this private bus the fake keeps the real app id, so the extension finds it.
     export CHIPPY_FAKE_KEEP_APP_ID=1
@@ -57,7 +59,7 @@ if [ "${1:-}" = "--inner" ]; then
             # data dir, which the isolated XDG_DATA_HOME hides; it only gets the nest dir.
             export FLATPAK_USER_DIR="$CN_FLATPAK_USER_DIR"
             app_env=(--env=CHIPPY_FAKE_KEEP_APP_ID=1 "--env=CHIPPY_FAKE_HOME=$CHIPPY_FAKE_HOME")
-            for app_var in CHIPPY_FAKE_SIGNED_OUT CHIPPY_FAKE_FAULT CHIPPY_FAKE_QR_DELAY; do
+            for app_var in CHIPPY_FAKE_SIGNED_OUT CHIPPY_FAKE_FAULT CHIPPY_FAKE_QR_DELAY CHIPPY_FAKE_MAP_LAG; do
                 [ -n "${!app_var:-}" ] && app_env+=("--env=$app_var=${!app_var}")
             done
             exec flatpak run --user "${app_env[@]}" "--filesystem=$CN_NEST_ROOT_RESOLVED" \
@@ -70,7 +72,7 @@ if [ "${1:-}" = "--inner" ]; then
     exec gnome-shell --headless --wayland --no-x11 --virtual-monitor 1280x800 --wayland-display chippy-nest
 fi
 
-run_timeout=150
+run_timeout=""
 scenario=main
 scheme=light
 while [ $# -gt 0 ]; do
@@ -84,6 +86,10 @@ done
 case "$scenario" in main|signin|qr|edit) ;; *) echo "--scenario must be main, signin, qr or edit: $scenario" >&2; exit 2 ;; esac
 case "$scheme" in light|dark) ;; *) echo "--scheme must be light or dark: $scheme" >&2; exit 2 ;; esac
 export CN_SCENARIO="$scenario" CN_SCHEME="$scheme"
+if [ -z "$run_timeout" ]; then
+    run_timeout=150
+    [ "$scenario" = edit ] && run_timeout=240
+fi
 
 # CN_APP=flatpak tests the installed Flatpak instead of the source tree (e.g. on a machine
 # with another GNOME version and no dev setup); the extension under test is still this repo's.
@@ -269,6 +275,8 @@ elif [ "$scenario" = edit ]; then
         merge-done
         return-keeps-editing
         discard-leaves
+        rename-saved
+        split-done
     )
 elif [ "$scenario" = qr ]; then
     required_checks=(
