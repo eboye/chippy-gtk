@@ -1,0 +1,188 @@
+# Builds Chippy for every major Linux packaging format, installs each package on the distros
+# it is for, and publishes a GitHub release when a version tag (vX.Y.Z) is pushed.
+#
+#   Flatpak            x86_64 and aarch64 (GNOME 51 runtime)
+#   .deb               Debian 13, Ubuntu 26.04 LTS and 26.10
+#   .rpm               Fedora 45, openSUSE Tumbleweed (separate builds: package names differ)
+#   .pkg.tar.zst       Arch Linux
+#
+# Run it by hand (Actions → Release → Run workflow) to build and test without releasing.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NFPM_VERSION: "2.48.0"
+  NFPM_SHA256: "6d7f9a28b2f397934403950fcbba83f598b08d02edbe79a0815b3b4897341750"
+
+jobs:
+  check:
+    name: Tests and version
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Install GTK, libadwaita and tools
+        run: >-
+          pacman -Syu --noconfirm --needed python python-gobject python-cairo gtk4 libadwaita
+          uv xorg-server-xvfb ttf-dejavu git gcc
+      - uses: actions/checkout@v7
+      - name: Check the version
+        id: version
+        run: |
+          if [ "${{ github.ref_type }}" = tag ]; then
+            python3 packaging/build.py check-version "${{ github.ref_name }}"
+          else
+            python3 packaging/build.py check-version
+          fi
+          echo "version=$(python3 packaging/build.py version)" >> "$GITHUB_OUTPUT"
+      - name: Set up the environment
+        run: |
+          uv venv --system-site-packages --python /usr/bin/python3
+          uv sync --locked
+      - name: Lint
+        run: |
+          uv run ruff check src tests packaging
+          uv run ruff format --check src tests packaging
+      - name: Tests
+        env:
+          GDK_DISABLE: gl,vulkan
+          GSK_RENDERER: cairo
+        run: xvfb-run -a uv run pytest -q
+
+  flatpak:
+    name: Flatpak (${{ matrix.arch }})
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
+      options: --privileged
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          manifest-path: flatpak/io.github.eboye.Chippy.json
+          bundle: chippy-${{ needs.check.outputs.version }}-${{ matrix.arch }}.flatpak
+          arch: ${{ matrix.arch }}
+          artifact-name: flatpak-${{ matrix.arch }}
+          cache-key: flatpak-builder-${{ hashFiles('flatpak/**') }}
+
+  packages:
+    name: deb, rpm and pacman packages
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Install nfpm
+        run: |
+          curl -fsSLo nfpm.tar.gz "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz"
+          echo "${NFPM_SHA256}  nfpm.tar.gz" | sha256sum -c -
+          tar xzf nfpm.tar.gz nfpm
+          sudo install -m755 nfpm /usr/local/bin/nfpm
+          rm nfpm nfpm.tar.gz
+      - name: Stage the files
+        run: python packaging/build.py stage stage
+      - name: Build the packages
+        run: |
+          for target in debian fedora opensuse arch; do
+            python packaging/build.py package stage "$target" dist
+          done
+      - uses: actions/upload-artifact@v7
+        with:
+          name: packages
+          path: dist/
+          if-no-files-found: error
+
+  install-test:
+    name: Install on ${{ matrix.name }}
+    needs: packages
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Debian 13
+            image: debian:13
+            file: "*.deb"
+          - name: Ubuntu 26.04 LTS
+            image: ubuntu:26.04
+            file: "*.deb"
+          - name: Ubuntu 26.10
+            image: ubuntu:26.10
+            file: "*.deb"
+          - name: Fedora 45
+            image: fedora:45
+            file: "*.fedora.x86_64.rpm"
+          - name: openSUSE Tumbleweed
+            image: opensuse/tumbleweed:latest
+            file: "*.opensuse.x86_64.rpm"
+          - name: Arch Linux
+            image: archlinux:latest
+            file: "*.pkg.tar.zst"
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: packaging
+      - uses: actions/download-artifact@v8
+        with:
+          name: packages
+          path: dist
+      - name: Install the package and start Chippy
+        run: packaging/install-test.sh dist/${{ matrix.file }}
+
+  release:
+    name: Publish the release
+    if: github.ref_type == 'tag'
+    needs: [check, flatpak, install-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+      - uses: softprops/action-gh-release@v3
+        with:
+          name: Chippy ${{ needs.check.outputs.version }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.flatpak
+            dist/*.deb
+            dist/*.rpm
+            dist/*.pkg.tar.zst
+            dist/SHA256SUMS

@@ -33,13 +33,18 @@ def extensions_root() -> Path:
     return base / "gnome-shell" / "extensions"
 
 
-def bundled_source() -> Path:
+# Where an installed Chippy keeps its copy: Flatpak, then distro packages, then local installs.
+INSTALLED_DIRS = ("/app/share", "/usr/share", "/usr/local/share")
+
+
+def bundled_source(installed_dirs=INSTALLED_DIRS) -> Path:
     override = os.environ.get("CHIPPY_EXTENSION_DIR")
     if override:
         return Path(override)
-    installed = Path("/app/share/chippy/extension") / UUID
-    if installed.is_dir():
-        return installed
+    for base in installed_dirs:
+        installed = Path(base) / "chippy" / "extension" / UUID
+        if installed.is_dir():
+            return installed
     return Path(__file__).resolve().parents[2] / "extension" / UUID
 
 

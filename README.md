@@ -62,7 +62,23 @@ Robots that someone has shared with your Xiaomi account show up too.
 
 ## Install
 
-### Flatpak (recommended)
+Download a package for your system from the
+[latest release](https://github.com/eboye/chippy-gtk/releases/latest):
+
+| System | File | Install with |
+|---|---|---|
+| Any distro (Flatpak) | `chippy-…-x86_64.flatpak` / `-aarch64.flatpak` | `flatpak install --user ./chippy-*.flatpak` |
+| Debian 13, Ubuntu 26.04 LTS and newer | `chippy_…_amd64.deb` | `sudo apt install ./chippy_*_amd64.deb` |
+| Fedora 45 | `chippy-….fedora.x86_64.rpm` | `sudo dnf install ./chippy-*.fedora.x86_64.rpm` |
+| openSUSE Tumbleweed | `chippy-….opensuse.x86_64.rpm` | `sudo zypper install --allow-unsigned-rpm ./chippy-*.opensuse.x86_64.rpm` |
+| Arch Linux | `chippy-…-x86_64.pkg.tar.zst` | `sudo pacman -U chippy-*-x86_64.pkg.tar.zst` |
+
+The Flatpak needs the GNOME 51 runtime from [Flathub](https://flathub.org/setup), which
+Flatpak offers to install with it. The other packages use your system's GTK 4 and libadwaita
+(1.6 or newer); each one is installed on the distros above and started by CI before a release
+goes out. The packages aren't signed: check them against `SHA256SUMS` from the same release.
+
+### Build the Flatpak yourself
 
 You need `flatpak-builder` and the GNOME 51 runtime and SDK from Flathub:
 
@@ -176,6 +192,21 @@ tools/nested-check.sh --scenario main              # app + extension in an isola
   keyboard input, and writes screenshots and results to `/tmp/chippy-nest/out`. Scenarios:
   `main`, `signin`, `qr` and `edit`.
 
+### Releases
+
+[`.github/workflows/release.yml`](.github/workflows/release.yml) runs the tests, builds the
+Flatpak (x86_64 and aarch64) and the deb, rpm and pacman packages, installs each package in a
+fresh container of every distro it's for and starts Chippy there with the demo robot. Pushing
+a version tag also publishes everything as a GitHub release:
+
+1. Set the new version in `src/chippy/__init__.py` and `pyproject.toml`, and add a
+   `<release>` entry to `data/io.github.eboye.Chippy.metainfo.xml`
+   (`packaging/build.py check-version` checks they agree).
+2. Commit, then tag and push: `git tag v0.2.0 && git push origin main v0.2.0`.
+
+To build and test without releasing, run the workflow by hand from the Actions tab.
+`packaging/build.py` and `packaging/install-test.sh` do the same locally (see their headers).
+
 <details>
 <summary>Project layout and Flatpak dependencies</summary>
 
@@ -187,6 +218,8 @@ tools/nested-check.sh --scenario main              # app + extension in an isola
 | `flatpak/` | The Flatpak manifest and generated Python dependencies |
 | `tests/` | The pytest suite |
 | `tools/` | Dev runner and the nested GNOME Shell check |
+| `packaging/` | deb, rpm and pacman builds (nfpm) and the install and smoke tests |
+| `.github/workflows/` | The release workflow |
 
 `flatpak/python-deps.json` is generated with
 [flatpak-pip-generator](https://github.com/flatpak/flatpak-builder-tools/tree/master/pip):

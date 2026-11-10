@@ -2,7 +2,14 @@ import json
 
 import pytest
 
-from chippy.shellext import MARKER, UUID, Installer, ShellExtError, live_shell_allowed
+from chippy.shellext import (
+    MARKER,
+    UUID,
+    Installer,
+    ShellExtError,
+    bundled_source,
+    live_shell_allowed,
+)
 
 
 def test_live_shell_allowed():
@@ -91,3 +98,19 @@ def test_refuses_a_folder_it_did_not_install(tmp_path):
         inst.remove()
     assert shell.calls == []  # the Shell's state for that extension is left alone too
     assert (root / UUID / "mine.js").exists()
+
+
+def test_bundled_source_finds_a_distro_install(tmp_path, monkeypatch):
+    monkeypatch.delenv("CHIPPY_EXTENSION_DIR", raising=False)
+    flatpak, distro = tmp_path / "app", tmp_path / "usr"
+    (distro / "chippy" / "extension" / UUID).mkdir(parents=True)
+    assert bundled_source((flatpak, distro)) == distro / "chippy" / "extension" / UUID
+    (flatpak / "chippy" / "extension" / UUID).mkdir(parents=True)
+    assert bundled_source((flatpak, distro)) == flatpak / "chippy" / "extension" / UUID
+
+
+def test_bundled_source_falls_back_to_the_source_tree(tmp_path, monkeypatch):
+    monkeypatch.delenv("CHIPPY_EXTENSION_DIR", raising=False)
+    found = bundled_source((tmp_path / "none",))
+    assert found.parts[-2:] == ("extension", UUID)
+    assert (found / "metadata.json").is_file()

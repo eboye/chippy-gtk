@@ -1,0 +1,7 @@
+version: 2
+updates:
+  # Keep the actions in .github/workflows on their newest releases.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

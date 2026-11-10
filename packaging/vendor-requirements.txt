@@ -1,0 +1,27 @@
+# Python libraries shipped inside the deb, rpm and pacman packages, in /usr/lib/chippy.
+# All pure Python except pycryptodome, whose wheel is abi3 (any Python 3 on x86_64), so the
+# packages don't break when a distro moves to a newer Python. The compiled libraries that
+# distros ship and keep patched (cryptography, PyYAML, zeroconf) come from the distro instead:
+# see DEPENDS in packaging/build.py. Keep the versions in step with uv.lock.
+android-backup==0.2.0
+appdirs==1.4.4
+attrs==26.1.0
+certifi==2026.10.23
+charset-normalizer==3.5.2
+click==8.5.1
+construct==2.10.70
+croniter==7.0.0
+defusedxml==0.7.1
+idna==3.20
+jeepney==0.9.0
+micloud==0.6
+pycryptodome==4.4.0
+python-dateutil==4.0.0
+python-miio==0.5.12
+pytz==2026.6
+requests==2.34.2
+secretstorage==3.5.0
+tqdm==4.70.1
+tzdata==2026.6
+tzlocal==5.4.5
+urllib3==2.8.0
