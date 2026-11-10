@@ -79,8 +79,9 @@ unverified until the live check.
 
 ### UI
 - Header: "Edit map" toggle (pencil icon), insensitive unless `can_edit`.
-- Outside edit mode the map draws zones (no-go: red hatched, no-mop: blue hatched), walls (red
-  lines) and order badges on room labels.
+- Outside edit mode the map draws zones (no-go: red hatched, no-mop: blue hatched) and walls
+  (red lines). Order badges on room labels show in edit mode only (amended 2026-11-10: outside
+  edit mode the order would need a cloud fetch on every map load and mostly adds clutter).
 - Edit mode:
   - Map toolbar (overlay, top-left): Select, No-go zone, No-mop zone, Wall, Order, Split, Merge.
   - Select: click a zone/wall to select (handles: rect corners, line ends; drag to move/resize;
