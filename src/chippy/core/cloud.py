@@ -10,6 +10,8 @@ import re
 import string
 import threading
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 from urllib.parse import parse_qs, urlparse
 
 import requests
@@ -22,6 +24,9 @@ ACCOUNT_HOST = "https://account.xiaomi.com"
 # and a request that never answers would otherwise hold its worker (and CloudMap's lock).
 HTTP_TIMEOUT = (15, 15)
 MAP_DOWNLOAD_TIMEOUT = 20
+# Xiaomi's QR login long poll: each request waits up to 10 s, so a cancel is seen quickly.
+QR_POLL_TIMEOUT = (10, 10)
+QR_DEFAULT_TIMEOUT = 300
 
 
 class CloudError(Exception):
@@ -66,6 +71,27 @@ class CaptchaRequired(MiCloudAccessDenied):
         self.url = url
 
 
+class QrLoginExpired(CloudError):
+    def __init__(self):
+        super().__init__("The code expired.")
+
+
+class QrLoginCancelled(CloudError):
+    def __init__(self):
+        super().__init__("QR sign-in cancelled")
+
+
+@dataclass(frozen=True)
+class QrLogin:
+    """A started QR sign-in. `login_url` is the same login as a web page; `poll_url` is
+    secret (it collects the session) and must never be logged."""
+
+    image: bytes
+    login_url: str
+    poll_url: str
+    timeout: int
+
+
 def _network_safe(method):
     """Turn a requests failure into a CloudUnreachable without the original's text."""
 
@@ -83,10 +109,10 @@ class XiaomiCloud(MiCloud):
     def login(self) -> bool:
         """micloud's login without its logging (it logs the username and error texts) and
         with network failures raised as CloudUnreachable instead of a bare False."""
+        if self.user_id and self.service_token:
+            return True  # a saved session (also a QR sign-in, which has no password)
         if not (self.username and self.password):
             return False
-        if self.user_id and self.service_token:
-            return True
         try:
             self._login_request()
         except (MiCloudAccessDenied, CloudUnreachable, CloudError):
@@ -137,6 +163,83 @@ class XiaomiCloud(MiCloud):
         if response.status_code != 200 or not response.content:
             raise CloudError(f"could not download Xiaomi's captcha (HTTP {response.status_code})")
         return response.content
+
+    # QR sign-in, as the maintained token extractor does it (PiotrMachowski's
+    # Xiaomi-cloud-tokens-extractor, MIT): accounts without a Xiaomi password (Google,
+    # Facebook, Apple) approve the login in the Xiaomi Home app.
+    @_network_safe
+    def start_qr_login(self) -> QrLogin:
+        self._init_session(reset=True)
+        response = self.session.get(
+            f"{ACCOUNT_HOST}/longPolling/loginUrl",
+            params={
+                "_qrsize": "480",
+                "qs": "%3Fsid%3Dxiaomiio%26_json%3Dtrue",
+                "callback": "https://sts.api.io.mi.com/sts",
+                "_hasLogo": "false",
+                "sid": "xiaomiio",
+                "serviceParam": "",
+                "_locale": "en_GB",
+                "_dc": str(int(time.time() * 1000)),
+            },
+        )
+        data = _json_body(response.text) if response.status_code == 200 else {}
+        qr, login_url, poll_url = data.get("qr"), data.get("loginUrl"), data.get("lp")
+        if not (qr and login_url and poll_url):
+            raise CloudError(f"Xiaomi didn't start a QR sign-in{_reason(data)}")
+        image = self.session.get(qr)
+        if image.status_code != 200 or not image.content:
+            raise CloudError(f"couldn't download the QR code (HTTP {image.status_code})")
+        try:
+            timeout = int(data.get("timeout") or QR_DEFAULT_TIMEOUT)
+        except (TypeError, ValueError):
+            timeout = QR_DEFAULT_TIMEOUT
+        return QrLogin(image.content, str(login_url), str(poll_url), timeout)
+
+    def wait_qr_login(
+        self,
+        qr: QrLogin,
+        cancelled: Callable[[], bool],
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        """Block until the QR login is approved (the session is then set), it expires
+        (QrLoginExpired) or `cancelled()` turns true (QrLoginCancelled)."""
+        deadline = clock() + qr.timeout
+        while True:
+            if cancelled():
+                raise QrLoginCancelled()
+            if clock() >= deadline:
+                raise QrLoginExpired()
+            try:
+                response = self.session.get(qr.poll_url, timeout=QR_POLL_TIMEOUT)
+            except requests.Timeout:
+                sleep(0)  # the request itself already waited; just poll again
+                continue
+            except requests.RequestException:
+                raise CloudUnreachable() from None
+            if response.status_code == 200:
+                break
+            sleep(1)  # nothing yet: don't spin
+        if cancelled():
+            raise QrLoginCancelled()
+        data = _json_body(response.text)
+        user_id, ssecurity = data.get("userId"), data.get("ssecurity")
+        location = data.get("location")
+        if not (user_id and ssecurity and location):
+            raise CloudError("Xiaomi's QR sign-in reply was incomplete")
+        try:
+            sts = self.session.get(location)
+        except requests.RequestException:
+            raise CloudUnreachable() from None
+        token = sts.cookies.get("serviceToken") or self._cookie("serviceToken")
+        if not token:
+            raise CloudError("Xiaomi's QR sign-in finished without a service token")
+        self.user_id = str(user_id)
+        self.ssecurity = ssecurity
+        self.cuser_id = data.get("cUserId")
+        self.pass_token = data.get("passToken")
+        self.service_token = token
 
     def _init_session(self, reset=False):
         """micloud's session (with timeouts), with the client identity Xiaomi's login accepts
