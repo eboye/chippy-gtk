@@ -9,6 +9,8 @@ import struct
 import zlib
 from dataclasses import dataclass, field
 
+from .mapedit import MapZones
+
 # Segment ids travel over D-Bus as `u` (uint32); 0 is not a real room.
 SEGMENT_ID_LIMIT = 2**32
 HEADER = struct.Struct("<hhBhhhhhhhhhhh")  # 27 bytes
@@ -95,6 +97,8 @@ class MapFrame:
     names: dict[int, str]
     robot: tuple[int, int, int] | None = None  # x mm, y mm, angle in degrees (map frame, y up)
     path: list[tuple[int, int]] = field(default_factory=list)  # cleaning path, absolute mm
+    map_id: int = 0
+    zones: MapZones = field(default_factory=MapZones)
 
 
 _PATH_TOKEN = re.compile(r"([SMLl])\s*(-?\d+)\s*,\s*(-?\d+)")
@@ -158,4 +162,28 @@ def decode_map(payload: bytes | str) -> MapFrame:
     robot = (fields[3], fields[4], fields[5]) if (fields[3], fields[4]) != (0, 0) else None
     trail = info.get("tr")
     path = parse_path(trail) if isinstance(trail, str) else []
-    return MapFrame(width, height, grid_mm, left, top, charger, bytes(pixels), names, robot, path)
+    return MapFrame(
+        width,
+        height,
+        grid_mm,
+        left,
+        top,
+        charger,
+        bytes(pixels),
+        names,
+        robot,
+        path,
+        map_id=fields[0],
+        zones=MapZones.parse(info.get("vw")),
+    )
+
+
+def saved_map_id(payload: bytes | str) -> int:
+    """The current saved map's id (`curr_id` of the saved-maps document), else the header's."""
+    try:
+        doc = json.loads(payload)
+    except (ValueError, TypeError):
+        doc = None
+    if isinstance(doc, dict) and isinstance(doc.get("curr_id"), int):
+        return doc["curr_id"]
+    return decode_map(payload).map_id

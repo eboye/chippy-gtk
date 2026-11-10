@@ -174,6 +174,7 @@ def test_decode_map_returns_geometry_pixels_and_names():
         charger=(500, 35),
         pixels=pixels,
         names={1: "Kitchen"},
+        map_id=1,
     )
 
 
@@ -229,3 +230,19 @@ def test_parse_path_tolerates_junk():
     assert parse_path("") == []
     assert parse_path("M1,2 L3,4 X9,9 l1,1 Lfoo") == [(1, 2), (4, 6), (1, 1)]
     assert parse_path("L5,5S1,1") == [(1, 1)]  # a relative step needs a previous point
+
+
+def test_frame_carries_map_id_and_zones():
+    header = struct.pack("<hhBhhhhhhhhhhh", 4, 1, 73, 0, 0, 0, 0, 0, 0, 50, 2, 2, 0, 0)
+    vw = {"line": [], "rect": [[0, 0, 500, 500]], "mop": []}
+    trailer = json.dumps({"seg_inf": {}, "vw": vw}).encode()
+    frame = decode_map(zlib.compress(header + bytes(4) + trailer))
+    assert frame.map_id == 4
+    assert len(frame.zones.no_go) == 1
+
+
+def test_saved_map_id_reads_curr_id():
+    from chippy.core.fake import build_fake_payload
+    from chippy.core.mapdecode import saved_map_id
+
+    assert saved_map_id(build_fake_payload()) == 0
