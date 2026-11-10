@@ -1,0 +1,51 @@
+{
+  "id": "io.github.eboye.Chippy",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "51",
+  "sdk": "org.gnome.Sdk",
+  "command": "chippy",
+  "finish-args": [
+    "--share=network",
+    "--share=ipc",
+    "--socket=wayland",
+    "--socket=fallback-x11",
+    "--device=dri",
+    "--talk-name=org.freedesktop.secrets",
+    "--talk-name=org.gnome.Shell.Extensions",
+    "--filesystem=xdg-data/gnome-shell/extensions:create",
+    "--filesystem=xdg-config/dreamed:ro"
+  ],
+  "modules": [
+    "python-deps.json",
+    {
+      "name": "chippy",
+      "buildsystem": "simple",
+      "build-commands": [
+        "pip3 install --no-deps --no-build-isolation --prefix=/app .",
+        "install -Dm644 data/io.github.eboye.Chippy.desktop -t /app/share/applications",
+        "install -Dm644 data/io.github.eboye.Chippy.metainfo.xml -t /app/share/metainfo",
+        "install -Dm644 data/io.github.eboye.Chippy.service -t /app/share/dbus-1/services",
+        "cp -r data/icons /app/share/",
+        "mkdir -p /app/share/chippy/extension && cp -r extension/chippy@eboye.github.io /app/share/chippy/extension/"
+      ],
+      "sources": [
+        {
+          "type": "dir",
+          "path": "..",
+          "skip": [
+            ".git",
+            ".venv",
+            "node_modules",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".superpowers",
+            ".flatpak-builder",
+            "build-dir",
+            "repo",
+            "out"
+          ]
+        }
+      ]
+    }
+  ]
+}

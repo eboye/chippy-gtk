@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#deddda"/>
+    </linearGradient>
+  </defs>
+  <!-- shadow -->
+  <ellipse cx="64" cy="112" rx="50" ry="8" fill="#000000" opacity="0.15"/>
+  <!-- accent bumper ring -->
+  <circle cx="64" cy="62" r="54" fill="#3584e4"/>
+  <circle cx="64" cy="62" r="54" fill="none" stroke="#1c71d8" stroke-width="2"/>
+  <!-- body -->
+  <circle cx="64" cy="62" r="46" fill="url(#body)"/>
+  <circle cx="64" cy="62" r="46" fill="none" stroke="#c0bfbc" stroke-width="1.5"/>
+  <!-- top panel -->
+  <circle cx="64" cy="66" r="28" fill="#f6f5f4" stroke="#c0bfbc" stroke-width="1.5"/>
+  <!-- buttons -->
+  <rect x="52" y="60" width="24" height="5" rx="2.5" fill="#9a9996"/>
+  <!-- laser-distance sensor dot -->
+  <circle cx="64" cy="30" r="9" fill="#3d3846"/>
+  <circle cx="61" cy="27" r="2.5" fill="#77767b"/>
+</svg>

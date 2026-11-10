@@ -1,0 +1,2 @@
+{"uuid": "chippy-probe@eboye.github.io", "name": "Chippy probe (dev only)",
+ "description": "Drives tools/nested-check.sh. Never shipped.", "shell-version": ["50", "51"]}

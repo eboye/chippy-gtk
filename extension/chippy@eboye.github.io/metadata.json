@@ -1,0 +1,8 @@
+{
+  "uuid": "chippy@eboye.github.io",
+  "name": "Chippy",
+  "description": "Top-bar status and quick controls for the Chippy robot vacuum app.",
+  "shell-version": ["50", "51"],
+  "version": 1,
+  "url": "https://github.com/eboye/Chippy-gtk"
+}

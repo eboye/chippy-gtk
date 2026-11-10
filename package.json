@@ -1,0 +1,11 @@
+{
+  "name": "chippy-extension-dev",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "eslint extension"
+  },
+  "devDependencies": {
+    "eslint": "^9.39.5"
+  }
+}

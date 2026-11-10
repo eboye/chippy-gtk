@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2026 eboye -->
+<component type="desktop-application">
+  <id>io.github.eboye.Chippy</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <name>Chippy</name>
+  <summary>Control your robot vacuum</summary>
+
+  <description>
+    <p>
+      Chippy shows your Dreame robot vacuum’s map with its rooms, lets you pick the rooms to
+      clean and start, pause or send the robot home. Sign in once with your Xiaomi account;
+      the session is kept in the GNOME keyring.
+    </p>
+    <p>
+      Chippy can keep watching in the background and notify you when cleaning finishes or the
+      robot needs help, and an optional top-bar extension puts the robot’s status and controls
+      one click away. It is tested with the Dreame r2209 (Xiaomi Robot Vacuum X10); other Dreame
+      models are experimental.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.eboye.Chippy.desktop</launchable>
+  <url type="homepage">https://github.com/eboye/Chippy-gtk</url>
+
+  <developer id="io.github.eboye">
+    <name>eboye</name>
+  </developer>
+
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="0.1.0" date="2026-11-09" />
+  </releases>
+</component>

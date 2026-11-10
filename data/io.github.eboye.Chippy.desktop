@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Chippy
+Comment=Control your robot vacuum
+Exec=chippy
+Icon=io.github.eboye.Chippy
+Terminal=false
+Type=Application
+Categories=Utility;GTK;GNOME;
+Keywords=vacuum;robot;dreame;xiaomi;cleaning;
+DBusActivatable=true
+StartupNotify=true
