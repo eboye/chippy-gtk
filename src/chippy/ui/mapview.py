@@ -191,11 +191,12 @@ class MapView(Gtk.Widget):
         self.queue_draw()
 
     def order_badges(self) -> dict[int, int]:
-        """Room id -> its 1-based position in the order, for rooms that show a label."""
+        """Room id -> its 1-based position among the rooms that show a label (hidden rooms
+        keep their place in the robot's order, but get no number)."""
         if self.order is None:
             return {}
         shown = {r.id for r in self.rooms if r.anchor and not r.hidden}
-        return {seg: n for n, seg in enumerate(self.order, 1) if seg in shown}
+        return {seg: n for n, seg in enumerate((s for s in self.order if s in shown), 1)}
 
     def reset_view(self) -> None:
         if self.viewport:
@@ -369,20 +370,21 @@ class MapView(Gtk.Widget):
         (sx, sy), (ex, ey) = self.geom.to_mm(*start), self.geom.to_mm(*end)
         dx, dy = ex - sx, ey - sy
         shape = _zone_list(self.zones, kind)[index]
-        if isinstance(shape, Line):
+        geom = self.geom
+        if part == "body":  # moved whole, stopping at the map's edges
+            moved = geom.clamp_move(shape, dx, dy)
+        elif isinstance(shape, Line):
             x1, y1, x2, y2 = shape.x1, shape.y1, shape.x2, shape.y2
-            if part in ("body", "end0"):
+            if part == "end0":
                 x1, y1 = x1 + dx, y1 + dy
-            if part in ("body", "end1"):
+            else:
                 x2, y2 = x2 + dx, y2 + dy
-            moved = Line(x1, y1, x2, y2)
-        elif part == "body":
-            moved = Rect(shape.x1 + dx, shape.y1 + dy, shape.x2 + dx, shape.y2 + dy)
+            moved = geom.clamp_shape(Line(x1, y1, x2, y2))
         else:
             corners = rect_corners(shape)
             n = int(part[1])
             (cx, cy), opposite = corners[n], corners[(n + 2) % 4]
-            moved = Rect.of(cx + dx, cy + dy, *opposite)
+            moved = geom.clamp_shape(Rect.of(cx + dx, cy + dy, *opposite))
         return _with_zone(self.zones, kind, index, moved)
 
     def _on_drag_end(self, _gesture, _dx, _dy) -> None:
@@ -399,7 +401,8 @@ class MapView(Gtk.Widget):
             self._finish_drawing(*preview)
 
     def _finish_drawing(self, start, end) -> None:
-        a, b = self.geom.to_mm(*start), self.geom.to_mm(*end)
+        # inside the map: a zone or wall beyond its edges means nothing to the robot
+        a, b = self.geom.clamp(*self.geom.to_mm(*start)), self.geom.clamp(*self.geom.to_mm(*end))
         if self.tool == "split":
             line = Line(*a, *b)
             if _big_enough(line):

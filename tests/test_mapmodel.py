@@ -8,10 +8,12 @@ from chippy.mapmodel import (
     MapGeometry,
     Viewport,
     build_rooms,
+    frame_room_ids,
     geometry_from_frame,
     grid_from_frame,
     hit_zone,
     label_anchors,
+    line_splits_room,
     live_from_frame,
     room_areas,
     texture_rgba,
@@ -79,7 +81,7 @@ def test_live_from_frame_matches_charger_transform():
 def test_geometry_matches_charger_transform_and_round_trips():
     frame = decode_map(build_fake_payload())
     geom = geometry_from_frame(frame)
-    assert geom == MapGeometry(frame.left, frame.top, frame.grid_mm, frame.height)
+    assert geom == MapGeometry(frame.left, frame.top, frame.grid_mm, frame.height, frame.width)
     assert geom.to_cell(*frame.charger[:2]) == pytest.approx(grid_from_frame(frame).charger)
     assert geom.to_cell(frame.left, frame.top) == pytest.approx((0, frame.height))
     for x, y in ((0, 0), (1234, -567), (frame.left, frame.top), (-3999, 2001)):
@@ -187,3 +189,36 @@ def test_texture_dims_selection_and_outside(grid):
     sel, unsel = px(20, 4), px(3, 3)  # room 1 interior (selected), room 2 interior
     assert sel[3] == 255 and unsel[3] == 255
     assert sum(sel[:3]) > sum(unsel[:3])  # unselected rooms are dimmed toward black
+
+
+def test_clamp_keeps_points_and_shapes_inside_the_map():
+    geom = MapGeometry(left=0, top=0, grid_mm=200, height=10, width=20)  # 4000 x 2000 mm
+    assert geom.clamp(-50, 2500) == (0, 2000)
+    assert geom.clamp(1000, 1000) == (1000, 1000)
+    assert geom.clamp_shape(Rect(-300, 100, 500, 2600)) == Rect(0, 100, 500, 2000)
+    assert geom.clamp_shape(Line(3900, 100, 4500, 100)) == Line(3900, 100, 4000, 100)
+    # a move stops at the edge, keeping the size
+    assert geom.clamp_move(Rect(3000, 0, 3800, 500), 600, -100) == Rect(3200, 0, 4000, 500)
+    assert geom.clamp_move(Line(100, 100, 500, 900), -400, 50) == Line(0, 150, 400, 950)
+    unbounded = MapGeometry(left=0, top=0, grid_mm=200, height=10)
+    assert unbounded.clamp(-50, 9999) == (-50, 9999)
+
+
+def test_frame_room_ids_include_hidden_slivers_not_local_names():
+    frame = decode_map(build_fake_payload())
+    assert frame_room_ids(frame) == {1, 2, 3, 4, 5}
+
+
+def test_line_splits_room_only_across_it():
+    frame = decode_map(build_fake_payload())
+    grid, geom = grid_from_frame(frame), geometry_from_frame(frame)
+    # room 1: display rows 1-8, columns 11-38; a vertical line at column 25
+    top, bottom = geom.to_mm(25, 0.5), geom.to_mm(25, 9.5)  # above it .. in the hallway
+    assert line_splits_room(grid, geom, 1, Line(*top, *bottom))
+    inside = geom.to_mm(25, 4.5)
+    assert not line_splits_room(grid, geom, 1, Line(*top, *inside))  # ends inside
+    left, right = geom.to_mm(9.5, 0.5), geom.to_mm(9.5, 9.5)  # beside it, not over it
+    assert not line_splits_room(grid, geom, 1, Line(*left, *right))
+    edge = geom.to_mm(11, 0.5), geom.to_mm(11, 9.5)  # along its edge: one side only
+    assert not line_splits_room(grid, geom, 1, Line(*edge[0], *edge[1]))
+    assert not line_splits_room(grid, geom, 99, Line(*top, *bottom))  # no such room

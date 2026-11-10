@@ -9,7 +9,11 @@ from .state import Snapshot, name_to_value
 
 
 class DeviceError(Exception):
-    pass
+    """The robot answered with an error; `code` is its MIoT code when it gave one."""
+
+    def __init__(self, message: str = "", code: int | None = None):
+        super().__init__(message)
+        self.code = code
 
 
 class MiotLike(Protocol):
@@ -118,12 +122,13 @@ class Vacuum:
                 siid, aiid, [{"piid": self._profile.map_update_piid, "value": value}]
             )
         except DeviceError as exc:
-            code = str(exc).rsplit("code ", 1)[-1]
-            raise DeviceError(f"the robot refused the map change (code {code})") from exc
+            raise DeviceError(
+                f"the robot refused the map change (code {exc.code})", code=exc.code
+            ) from exc
         for item in result.get("out") or []:
             code = item.get("code", 0) if isinstance(item, dict) else 0
             if code:
-                raise DeviceError(f"the robot refused the map change (code {code})")
+                raise DeviceError(f"the robot refused the map change (code {code})", code=code)
 
     def set_room_settings_enabled(self, on: bool) -> None:
         self._set(*self._profile.props["room_settings"], 1 if on else 0)
@@ -133,7 +138,7 @@ class Vacuum:
             result = self._dev.call_action_by(siid, aiid, params or [])
         code = result.get("code", 0) if isinstance(result, dict) else 0
         if code != 0:
-            raise DeviceError(f"action {siid}.{aiid} failed with code {code}")
+            raise DeviceError(f"action {siid}.{aiid} failed with code {code}", code=code)
         return result if isinstance(result, dict) else {}
 
     def _set(self, siid: int, piid: int, value: int) -> None:
@@ -143,4 +148,4 @@ class Vacuum:
         for item in items:
             code = item.get("code", 0) if isinstance(item, dict) else 0
             if code != 0:
-                raise DeviceError(f"set {siid}.{piid} failed with code {code}")
+                raise DeviceError(f"set {siid}.{piid} failed with code {code}", code=code)

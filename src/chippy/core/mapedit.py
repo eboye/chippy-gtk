@@ -8,6 +8,16 @@ from dataclasses import dataclass, field, replace
 from .state import name_to_value
 
 MIN_SIZE_MM = 300
+# Segment ids travel over D-Bus as `u` (uint32); 0 is not a real room.
+SEGMENT_ID_LIMIT = 2**32
+# Labels of the save steps, for messages ("Saved zones; room names failed: ...").
+STEP_LABELS = {
+    "zones": "zones",
+    "names": "room names",
+    "settings": "room settings",
+    "order": "cleaning order",
+    "room_settings": "Use room settings",
+}
 
 
 def _ints(item, n: int) -> list[int] | None:
@@ -53,16 +63,33 @@ class MapZones:
 
     @classmethod
     def parse(cls, vw: object) -> "MapZones":
+        return cls.read(vw)[0]
+
+    @classmethod
+    def read(cls, vw: object) -> tuple["MapZones", bool]:
+        """(zones, known): `known` only when `vw` is an object and every item of its
+        line/rect/mop lists was read. Zones that weren't all read must never be resent (the
+        robot takes the complete set, so a save would drop the unread ones)."""
         if not isinstance(vw, dict):
-            return cls()
+            return cls(), False
+        known = True
 
-        def rects(key):
-            items = vw.get(key) if isinstance(vw.get(key), list) else []
-            return tuple(Rect.of(*v) for v in (_ints(i, 4) for i in items) if v)
+        def values(key) -> list[list[int]]:
+            nonlocal known
+            items = vw.get(key, [])
+            if not isinstance(items, list):
+                known = False
+                return []
+            out = [_ints(i, 4) for i in items]
+            known = known and all(v is not None for v in out)
+            return [v for v in out if v is not None]
 
-        lines = vw.get("line") if isinstance(vw.get("line"), list) else []
-        walls = tuple(Line(*v) for v in (_ints(i, 4) for i in lines) if v)
-        return cls(rects("rect"), rects("mop"), walls)
+        zones = cls(
+            tuple(Rect.of(*v) for v in values("rect")),
+            tuple(Rect.of(*v) for v in values("mop")),
+            tuple(Line(*v) for v in values("line")),
+        )
+        return zones, known
 
     def payload(self) -> dict:
         return {
@@ -96,9 +123,9 @@ def parse_cleanset(obj, profile) -> tuple[dict[int, RoomSetting], list[int]] | N
     settings: dict[int, RoomSetting] = {}
     order_of: dict[int, int] = {}
     for key, values in obj.items():
-        if not (isinstance(key, str) and key.isdigit()) or not isinstance(values, list):
+        if not (isinstance(key, str) and key.isdecimal()) or not isinstance(values, list):
             continue
-        if len(values) < 3:
+        if len(values) < 3 or not 0 < int(key) < SEGMENT_ID_LIMIT:
             continue
         try:
             suction, water, passes = int(values[0]), int(values[1]), int(values[2])
@@ -135,6 +162,20 @@ class EditSession:
     use_room_settings: bool
     settings_known: bool
     unsupported: set[str] = field(default_factory=set)
+    zones_known: bool = True  # False: the map's zones couldn't all be read; never resend them
+
+    @property
+    def zones_locked(self) -> bool:
+        """Zones are read-only: the robot refused them, or they couldn't be read."""
+        return "zones" in self.unsupported or not self.zones_known
+
+    def renamed(self, original: "EditSession") -> dict[int, str]:
+        """Rooms whose (non-blank) name differs from `original`'s, with the stripped name."""
+        return {
+            seg: name.strip()
+            for seg, name in sorted(self.names.items())
+            if name.strip() and name.strip() != original.names.get(seg)
+        }
 
     def copy(self) -> "EditSession":
         return replace(
@@ -146,27 +187,25 @@ class EditSession:
         )
 
     def changes(self, original: "EditSession", profile) -> list[MapEdit]:
+        """The steps to send, in a fixed order; kinds the robot refused as unsupported are
+        left out (their staged edits stay, but can't be sent)."""
         edits: list[MapEdit] = []
-        if self.zones != original.zones:
+        off = self.unsupported
+        if not self.zones_locked and self.zones != original.zones:
             edits.append(MapEdit("zones", self.zones.payload()))
-        renamed = {
-            seg: name
-            for seg, name in self.names.items()
-            if name.strip() and name.strip() != original.names.get(seg)
-        }
+        renamed = self.renamed(original) if "names" not in off else {}
         if renamed:
             nsr = {
                 str(seg): {
-                    "name": base64.b64encode(name.strip().encode("utf-8")).decode(),
+                    "name": base64.b64encode(name.encode("utf-8")).decode(),
                     "type": 0,
                     "index": 0,
                 }
-                for seg, name in sorted(renamed.items())
+                for seg, name in renamed.items()
             }
             edits.append(MapEdit("names", {"nsr": nsr, "mapid": self.map_id}))
-        if self.settings != original.settings or (
-            not original.settings_known and self.use_room_settings
-        ):
+        # only what the user changed: unknown settings are never sent as defaults
+        if "settings" not in off and self.settings and self.settings != original.settings:
             rows = [
                 [
                     seg,
@@ -177,11 +216,46 @@ class EditSession:
                 for seg, s in sorted(self.settings.items())
             ]
             edits.append(MapEdit("settings", {"customeClean": rows}))
-        if self.order != original.order:
+        if "order" not in off and self.order and self.order != original.order:
             edits.append(MapEdit("order", {"cleanOrder": list(self.order)}))
-        if self.use_room_settings != original.use_room_settings:
+        if "room_settings" not in off and self.use_room_settings != original.use_room_settings:
             edits.append(MapEdit("room_settings", None, self.use_room_settings))
         return edits
+
+    def saved(self, edited: "EditSession", kinds) -> "EditSession":
+        """A copy of this original with the `kinds` of `edited` that reached the robot, so
+        they are neither resent nor counted as changes."""
+        out = self.copy()
+        if "zones" in kinds:
+            out.zones = edited.zones
+        if "names" in kinds:
+            out.names.update(edited.renamed(self))
+        if "settings" in kinds:
+            out.settings = dict(edited.settings)
+        if "order" in kinds:
+            out.order = list(edited.order)
+        if "room_settings" in kinds:
+            out.use_room_settings = edited.use_room_settings
+        return out
+
+
+def save_failure_text(error: Exception, failed: str | None, done: list[str]) -> str:
+    """'Saved zones; room names failed: <error>' (or 'Saving room names failed: ...')."""
+    if failed is None:
+        return f"Saving failed: {error}"
+    label = STEP_LABELS.get(failed, failed)
+    if not done:
+        return f"Saving {label} failed: {error}"
+    labels = [STEP_LABELS.get(kind, kind) for kind in done]
+    saved = labels[0] if len(labels) == 1 else ", ".join(labels[:-1]) + " and " + labels[-1]
+    return f"Saved {saved}; {label} failed: {error}"
+
+
+def are_neighbours(neighbours: dict[int, frozenset[int]], a: int, b: int) -> bool:
+    """Whether rooms a and b touch (the map's `nei_id`); any pair when it has no data on them."""
+    if a not in neighbours and b not in neighbours:
+        return True
+    return b in neighbours.get(a, frozenset()) or a in neighbours.get(b, frozenset())
 
 
 def carry_edits(before: EditSession, edited: EditSession, fresh: EditSession) -> EditSession:

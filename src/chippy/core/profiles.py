@@ -10,6 +10,11 @@ class UnsupportedModel(Exception):
     pass
 
 
+# MIoT error codes that mean "this device has no such action/property" (not "it failed this
+# time"): only these mark a map-edit kind as unsupported on the model.
+MIOT_UNSUPPORTED_CODES = frozenset({-4001, -4002, -4003, -4004})
+
+
 @dataclass(frozen=True, eq=False)
 class Profile:
     key: str

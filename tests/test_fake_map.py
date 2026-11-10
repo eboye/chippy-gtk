@@ -158,3 +158,25 @@ def test_fake_settings_and_order_and_switch():
 def test_fake_live_frames_carry_cleanset():
     assert _trailer(fake_live_payload(2, FakeMap()))["cleanset"]["1"] == [1, 2, 1, 1, -1]
     assert "cleanset" not in _trailer(build_fake_payload())
+
+
+def test_fake_emits_nei_id_from_its_layout():
+    frame = decode_map(build_fake_payload())
+    assert frame.neighbours == {
+        1: frozenset({4}),
+        2: frozenset({4}),
+        3: frozenset({4, 5}),  # across the one-cell wall round room 3
+        4: frozenset({1, 2, 3}),
+        5: frozenset({3}),
+    }
+    fm = FakeMap()
+    fm.merge(2, 4)
+    assert decode_map(build_fake_payload(fake_map=fm)).neighbours[2] == frozenset({1, 3})
+
+
+def test_fake_lag_serves_the_old_map_after_an_edit():
+    fm = FakeMap(lag=2)
+    vac = FakeVacuum(fake_map=fm)
+    vac.update_map({"msr": [2, 4], "mapid": 0})
+    stale = [decode_map(fake.fake_saved_payload(fm)) for _ in range(3)]
+    assert [4 in f.names for f in stale] == [True, True, False]

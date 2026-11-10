@@ -175,6 +175,7 @@ def test_decode_map_returns_geometry_pixels_and_names():
         pixels=pixels,
         names={1: "Kitchen"},
         map_id=1,
+        zones_known=False,  # no `vw` in this trailer
     )
 
 
@@ -239,6 +240,33 @@ def test_frame_carries_map_id_and_zones():
     frame = decode_map(zlib.compress(header + bytes(4) + trailer))
     assert frame.map_id == 4
     assert len(frame.zones.no_go) == 1
+    assert frame.zones_known is True
+
+
+def _trailer_frame(trailer: dict):
+    header = struct.pack("<hhBhhhhhhhhhhh", 3, 1, 73, 0, 0, 0, 0, 0, 0, 50, 2, 2, 0, 0)
+    return decode_map(zlib.compress(header + bytes(4) + json.dumps(trailer).encode()))
+
+
+def test_zones_unknown_without_vw_or_with_unreadable_items():
+    assert _trailer_frame({"seg_inf": {}}).zones_known is False
+    frame = _trailer_frame({"seg_inf": {}, "vw": {"line": [[1, 2]], "rect": [], "mop": []}})
+    assert frame.zones_known is False and frame.zones == frame.zones.__class__()
+    # the real r2209's trailer
+    frame = _trailer_frame({"seg_inf": {}, "vw": {"line": [], "rect": [], "mop": []}})
+    assert frame.zones_known is True
+
+
+def test_neighbours_from_nei_id():
+    seg_inf = {
+        "1": {"nei_id": [2, 4]},
+        "2": {"nei_id": [1, "x", 0, True, 2**32]},
+        "4": {"nei_id": "junk"},
+        "5": {},
+    }
+    frame = _trailer_frame({"seg_inf": seg_inf})
+    assert frame.neighbours == {1: frozenset({2, 4}), 2: frozenset({1})}
+    assert _trailer_frame({"seg_inf": {"1": {}}}).neighbours == {}
 
 
 def test_saved_map_id_reads_curr_id():

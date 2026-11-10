@@ -5,7 +5,7 @@ from collections import deque
 from dataclasses import dataclass
 
 from .core.mapdecode import MapFrame
-from .core.mapedit import MapZones, Rect
+from .core.mapedit import Line, MapZones, Rect
 
 MIN_VISIBLE_AREA = 0.25
 PALETTE = [
@@ -60,6 +60,11 @@ def room_areas(grid: MapGrid) -> dict[int, int]:
         if seg:
             counts[seg] = counts.get(seg, 0) + 1
     return counts
+
+
+def frame_room_ids(frame: MapFrame) -> set[int]:
+    """Room ids the map itself knows: rooms with cells, and the robot's named rooms."""
+    return set(room_areas(grid_from_frame(frame))) | set(frame.names)
 
 
 def tiny_rooms(grid: MapGrid) -> set[int]:
@@ -146,6 +151,33 @@ class MapGeometry:
     top: int
     grid_mm: int
     height: int
+    width: int = 0  # cells; 0: no right edge known (nothing is clamped)
+
+    def clamp(self, x_mm: float, y_mm: float) -> tuple[int, int]:
+        """A point moved inside the map's extent."""
+        if self.width <= 0:
+            return round(x_mm), round(y_mm)
+        right, bottom = self.left + self.width * self.grid_mm, self.top + self.height * self.grid_mm
+        return (
+            round(min(max(x_mm, self.left), right)),
+            round(min(max(y_mm, self.top), bottom)),
+        )
+
+    def clamp_shape(self, shape):
+        """A drawn, resized or end-dragged zone or wall with its points inside the map."""
+        (x1, y1), (x2, y2) = self.clamp(shape.x1, shape.y1), self.clamp(shape.x2, shape.y2)
+        return Line(x1, y1, x2, y2) if isinstance(shape, Line) else Rect.of(x1, y1, x2, y2)
+
+    def clamp_move(self, shape, dx: float, dy: float):
+        """`shape` moved by (dx, dy), the move cut short at the map's edges (its size kept)."""
+        xs, ys = (shape.x1, shape.x2), (shape.y1, shape.y2)
+        if self.width > 0:
+            right = self.left + self.width * self.grid_mm
+            bottom = self.top + self.height * self.grid_mm
+            dx = min(max(dx, self.left - min(xs)), max(right - max(xs), self.left - min(xs)))
+            dy = min(max(dy, self.top - min(ys)), max(bottom - max(ys), self.top - min(ys)))
+        dx, dy = round(dx), round(dy)
+        return type(shape)(shape.x1 + dx, shape.y1 + dy, shape.x2 + dx, shape.y2 + dy)
 
     def to_cell(self, x_mm: float, y_mm: float) -> tuple[float, float]:
         return (x_mm - self.left) / self.grid_mm, self.height - (y_mm - self.top) / self.grid_mm
@@ -158,7 +190,41 @@ class MapGeometry:
 
 
 def geometry_from_frame(frame: MapFrame) -> MapGeometry:
-    return MapGeometry(frame.left, frame.top, frame.grid_mm, frame.height)
+    return MapGeometry(frame.left, frame.top, frame.grid_mm, frame.height, frame.width)
+
+
+def line_splits_room(grid: MapGrid, geom: MapGeometry, seg: int, line: Line) -> bool:
+    """Whether `line` (map mm) cuts room `seg` in two: both ends outside the room, the line
+    passes over it, and the room's cells lie on both sides of it (the robot's side test, as
+    the fake applies it)."""
+    cells = [
+        (col, row)
+        for row in range(grid.height)
+        for col in range(grid.width)
+        if grid.seg_at(col, row) == seg
+    ]
+    if not cells:
+        return False
+
+    def inside(x_mm, y_mm) -> bool:
+        cx, cy = geom.to_cell(x_mm, y_mm)
+        return grid.seg_at(math.floor(cx), math.floor(cy)) == seg
+
+    if inside(line.x1, line.y1) or inside(line.x2, line.y2):
+        return False
+    length = math.hypot(line.x2 - line.x1, line.y2 - line.y1)
+    steps = max(1, math.ceil(length / (geom.grid_mm / 4)))
+    if not any(
+        inside(line.x1 + (line.x2 - line.x1) * i / steps, line.y1 + (line.y2 - line.y1) * i / steps)
+        for i in range(steps + 1)
+    ):
+        return False
+    sides = set()
+    for col, row in cells:
+        cx, cy = geom.to_mm(col + 0.5, row + 0.5)
+        cross = (line.x2 - line.x1) * (cy - line.y1) - (line.y2 - line.y1) * (cx - line.x1)
+        sides.add(cross > 0)
+    return sides == {True, False}
 
 
 def rect_corners(rect: Rect) -> list[tuple[int, int]]:

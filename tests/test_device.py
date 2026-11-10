@@ -74,8 +74,9 @@ def test_set_suction_and_water():
 
 def test_set_error_code_raises():
     dev = RecordingDev(set_result=[{"code": -4004}])
-    with pytest.raises(DeviceError, match="set 4.4 failed with code -4004"):
+    with pytest.raises(DeviceError, match="set 4.4 failed with code -4004") as caught:
         Vacuum(dev, R2209).set_suction("quiet")
+    assert caught.value.code == -4004
 
 
 def test_clean_rooms_payload():
@@ -198,14 +199,16 @@ def test_update_map_sends_compact_json_on_6_2():
 
 def test_update_map_refusal_is_a_device_error():
     dev = RecordingDev(action_result={"code": -1})
-    with pytest.raises(DeviceError, match=r"refused the map change \(code -1\)"):
+    with pytest.raises(DeviceError, match=r"refused the map change \(code -1\)") as caught:
         Vacuum(dev, R2209).update_map({"cleanOrder": [1]})
+    assert caught.value.code == -1
 
 
 def test_update_map_refusal_inside_out_is_a_device_error():
     dev = RecordingDev(action_result={"code": 0, "out": [{"piid": 4, "code": -5}]})
-    with pytest.raises(DeviceError, match=r"refused the map change \(code -5\)"):
+    with pytest.raises(DeviceError, match=r"refused the map change \(code -5\)") as caught:
         Vacuum(dev, R2209).update_map({"cleanOrder": [1]})
+    assert caught.value.code == -5
 
 
 def test_room_settings_switch_is_4_26():

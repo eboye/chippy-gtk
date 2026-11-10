@@ -9,10 +9,8 @@ import struct
 import zlib
 from dataclasses import dataclass, field
 
-from .mapedit import MapZones
+from .mapedit import SEGMENT_ID_LIMIT, MapZones
 
-# Segment ids travel over D-Bus as `u` (uint32); 0 is not a real room.
-SEGMENT_ID_LIMIT = 2**32
 HEADER = struct.Struct("<hhBhhhhhhhhhhh")  # 27 bytes
 ROOM_TYPES = {
     1: "Living room",
@@ -99,6 +97,15 @@ class MapFrame:
     path: list[tuple[int, int]] = field(default_factory=list)  # cleaning path, absolute mm
     map_id: int = 0
     zones: MapZones = field(default_factory=MapZones)
+    zones_known: bool = True  # False: `vw` was missing or partly unreadable
+    # room -> the rooms it touches (seg_inf `nei_id`); empty when the map has no such data
+    neighbours: dict[int, frozenset[int]] = field(default_factory=dict)
+
+
+def _room_id(value) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 0 < value < SEGMENT_ID_LIMIT else None
 
 
 _PATH_TOKEN = re.compile(r"([SMLl])\s*(-?\d+)\s*,\s*(-?\d+)")
@@ -168,14 +175,20 @@ def decode_map(payload: bytes | str) -> MapFrame:
     seg_inf = info.get("seg_inf") or {}
     if not isinstance(seg_inf, dict):
         raise MapDecodeError("map seg_inf is not a JSON object")
+    neighbours: dict[int, frozenset[int]] = {}
     try:
         names = {
             int(key): _name(int(key), item or {})
             for key, item in seg_inf.items()
             if 0 < int(key) < SEGMENT_ID_LIMIT
         }
+        for key, item in seg_inf.items():
+            nei = item.get("nei_id") if isinstance(item, dict) else None
+            if int(key) in names and isinstance(nei, list):
+                neighbours[int(key)] = frozenset(n for n in map(_room_id, nei) if n is not None)
     except (AttributeError, TypeError, ValueError, OverflowError) as err:
         raise MapDecodeError(f"map room data is malformed: {err}") from err
+    zones, zones_known = MapZones.read(info.get("vw"))
     charger = (fields[6], fields[7]) if (fields[6], fields[7]) != (0, 0) else None
     robot = (fields[3], fields[4], fields[5]) if (fields[3], fields[4]) != (0, 0) else None
     trail = info.get("tr")
@@ -192,7 +205,9 @@ def decode_map(payload: bytes | str) -> MapFrame:
         robot,
         path,
         map_id=fields[0],
-        zones=MapZones.parse(info.get("vw")),
+        zones=zones,
+        zones_known=zones_known,
+        neighbours=neighbours,
     )
 
 

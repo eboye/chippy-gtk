@@ -9,11 +9,13 @@ from chippy.core.mapedit import (
     MapZones,
     Rect,
     RoomSetting,
+    are_neighbours,
     carry_edits,
     merge_payload,
     parse_cleanset,
     remap_after_merge,
     remap_after_split,
+    save_failure_text,
     split_payload,
 )
 from chippy.core.profiles import R2209
@@ -37,6 +39,16 @@ def test_zones_parse_skips_junk():
     assert MapZones.parse({"rect": [[1, 2, 3]], "line": ["x"], "mop": 5}) == MapZones()
 
 
+def test_zones_known_only_when_everything_was_read():
+    assert MapZones.read({"line": [], "rect": [], "mop": []}) == (MapZones(), True)
+    assert MapZones.read({"rect": [[0, 0, 500, 500]]})[1] is True  # absent lists are empty
+    assert MapZones.read(None)[1] is False
+    assert MapZones.read([])[1] is False
+    zones, known = MapZones.read({"rect": [[0, 0, 500, 500], [1, 2, 3]], "line": []})
+    assert zones.no_go == (Rect(0, 0, 500, 500),) and known is False
+    assert MapZones.read({"line": [], "rect": [], "mop": 5})[1] is False
+
+
 def test_zones_payload_is_the_complete_set():
     zones = MapZones(no_go=(Rect(0, 0, 500, 500),), walls=(Line(1, 2, 3, 4),))
     assert zones.payload() == {
@@ -54,6 +66,9 @@ def test_parse_cleanset_from_a_live_frame():
     }
     assert order == [2, 1]
     assert parse_cleanset("not a dict", R2209) is None
+    # ids as decode_map takes them: decimal digits only, 0 < id < 2**32
+    junk = {"0": [1, 1, 1], "²": [1, 1, 1], str(2**32): [1, 1, 1], "3": [1, 1, 1]}
+    assert set(parse_cleanset(junk, R2209)[0]) == {3}
     assert parse_cleanset(json.dumps({"1": [0, 2, 1, 1]}), R2209)[0] == {
         1: RoomSetting("quiet", "medium", 1)
     }
@@ -137,12 +152,70 @@ def test_changes_in_fixed_order_with_exact_payloads():
     assert edits[4] == MapEdit("room_settings", None, True)
 
 
-def test_unknown_settings_are_sent_once_saved_even_if_unchanged():
-    before = _session(settings_known=False)
+def test_unknown_settings_are_never_sent_unless_changed():
+    """The robot's switch on, its cleanset unreadable: nothing to save at the start, and a
+    zone-only edit sends only the zones (defaults would overwrite every room's settings)."""
+    before = _session(settings_known=False, use_room_settings=True)
+    assert before.copy().changes(before, R2209) == []
     after = before.copy()
-    after.use_room_settings = True
-    kinds = [e.kind for e in after.changes(before, R2209)]
-    assert kinds == ["settings", "room_settings"]
+    after.zones = MapZones(no_go=(Rect(0, 0, 500, 500),))
+    assert [e.kind for e in after.changes(before, R2209)] == ["zones"]
+    after.use_room_settings = False
+    assert [e.kind for e in after.changes(before, R2209)] == ["zones", "room_settings"]
+
+
+def test_no_settings_step_from_empty_settings():
+    before = _session(settings={}, order=[])
+    after = before.copy()
+    after.settings = {}
+    assert after.changes(_session(), R2209) == []
+
+
+def test_unsupported_and_unreadable_kinds_are_not_sent_but_kept():
+    before = _session()
+    after = before.copy()
+    after.zones = MapZones(no_mop=(Rect(0, 0, 400, 400),))
+    after.names[2] = "Bathroom"
+    after.order = [2, 1]
+    after.unsupported = {"names", "order"}
+    assert [e.kind for e in after.changes(before, R2209)] == ["zones"]
+    assert after.names[2] == "Bathroom" and after.order == [2, 1]
+    after.zones_known = False
+    assert after.zones_locked and after.changes(before, R2209) == []
+
+
+def test_saved_advances_the_original_for_completed_kinds():
+    before = _session()
+    after = before.copy()
+    after.zones = MapZones(no_mop=(Rect(0, 0, 400, 400),))
+    after.names[2] = " Bathroom "
+    after.order = [2, 1]
+    original = before.saved(after, ["zones", "names"])
+    assert original.zones == after.zones and original.names[2] == "Bathroom"
+    assert before.names[2] == "Bath"  # a copy
+    assert [e.kind for e in after.changes(original, R2209)] == ["order"]
+
+
+def test_save_failure_text_names_the_failed_and_the_completed_steps():
+    err = RuntimeError("the robot refused the map change (code -1)")
+    assert save_failure_text(err, "names", ["zones"]) == (
+        "Saved zones; room names failed: the robot refused the map change (code -1)"
+    )
+    assert save_failure_text(err, "order", ["zones", "names", "settings"]).startswith(
+        "Saved zones, room names and room settings; cleaning order failed: "
+    )
+    assert save_failure_text(err, "room_settings", []) == (
+        "Saving Use room settings failed: the robot refused the map change (code -1)"
+    )
+    assert save_failure_text(err, None, []) == f"Saving failed: {err}"
+
+
+def test_are_neighbours():
+    nei = {1: frozenset({4}), 2: frozenset({4}), 4: frozenset({1, 2})}
+    assert are_neighbours(nei, 1, 4) and are_neighbours(nei, 4, 2)
+    assert not are_neighbours(nei, 1, 2)
+    assert are_neighbours({}, 1, 2)  # no data: any pair
+    assert are_neighbours(nei, 7, 8)  # no data on either room
 
 
 def test_merge_split_payloads():

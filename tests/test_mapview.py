@@ -228,6 +228,23 @@ def test_select_click_move_resize_and_delete():
     assert events == []
 
 
+def test_zones_stay_inside_the_map():
+    # the fake map spans x -4000..4400 mm, y -2000..2200 mm
+    view, events = _edit_view("no_go")
+    _drag(view, (3800, 1800), (5000, 2600))  # drawn past the top-right corner
+    assert view.zones.no_go == (Rect(3800, 1800, 4400, 2200),)
+    view.set_tool("wall")
+    _drag(view, (-3000, 0), (-4800, 0))
+    assert view.zones.walls == (Line(-3000, 0, -4000, 0),)
+    view.set_tool("select")
+    _drag(view, (4100, 2000), (3700, 1000))  # body: moved down-left, inside: as dragged
+    assert view.zones.no_go == (Rect(3400, 800, 4000, 1200),)
+    _drag(view, (3700, 1000), (4700, 1600))  # body: past the right edge, stops there
+    assert view.zones.no_go == (Rect(3800, 1400, 4400, 1800),)
+    _drag(view, (4400, 1800), (5000, 2400))  # corner: clamped
+    assert view.zones.no_go == (Rect(3800, 1400, 4400, 2200),)
+
+
 def test_read_only_zones_can_be_selected_but_not_changed():
     zones = MapZones(no_go=(Rect(0, 1000, 1000, 1600),))
     view, events = _edit_view("select", zones)
@@ -340,8 +357,8 @@ def test_set_zones_keeps_the_selection_only_for_the_same_zones():
 def test_order_badges_number_visible_rooms():
     view = _view()
     assert view.order_badges() == {}
-    view.set_order([3, 5, 1])  # room 5 is hidden
-    assert view.order_badges() == {3: 1, 1: 3}
+    view.set_order([3, 5, 1])  # room 5 is hidden: no badge, and no gap in the numbers
+    assert view.order_badges() == {3: 1, 1: 2}
     view.set_order(None)
     assert view.order_badges() == {}
 

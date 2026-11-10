@@ -60,6 +60,26 @@ def _cell_mm(col: float, row: float) -> tuple[int, int]:
     return (round(_LEFT + col * _GRID_MM), round(_TOP + (len(FAKE_LAYOUT) - row) * _GRID_MM))
 
 
+NEIGHBOUR_REACH = 2  # cells: the fake leaves a one-cell wall between some rooms (3 and 4)
+
+
+def layout_neighbours(layout: list[str]) -> dict[int, set[int]]:
+    """Room -> the rooms with a cell within NEIGHBOUR_REACH cells of one of its own (the
+    fake's `nei_id`). Rooms two cells apart or more (1 and 2) are not neighbours."""
+    cells = {
+        (c, r): int(ch) for r, row in enumerate(layout) for c, ch in enumerate(row) if ch.isdigit()
+    }
+    out: dict[int, set[int]] = {seg: set() for seg in cells.values()}
+    span = range(-NEIGHBOUR_REACH, NEIGHBOUR_REACH + 1)
+    for (c, r), seg in cells.items():
+        for dc in span:
+            for dr in span:
+                other = cells.get((c + dc, r + dr))
+                if other is not None and other != seg:
+                    out[seg].add(other)
+    return out
+
+
 def _default_cleanset(layout: list[str]) -> dict[str, list[int]]:
     ids = sorted({int(ch) for row in layout for ch in row if ch.isdigit()})
     return {str(seg): [1, 2, 1, order, -1] for order, seg in enumerate(ids, 1)}
@@ -75,10 +95,35 @@ class FakeMap:
     zones: MapZones = field(default_factory=MapZones)
     cleanset: dict[str, list[int]] = field(default_factory=dict)
     room_settings: bool = False
+    # Saved-map fetches after each edit that still return the map from before it, like the
+    # cloud taking a while to publish the robot's new map (see `saved_view`).
+    lag: int = 0
+    _stale: "FakeMap | None" = field(default=None, init=False, repr=False, compare=False)
+    _stale_left: int = field(default=0, init=False, repr=False, compare=False)
 
     def __post_init__(self):
         if not self.cleanset:
             self.cleanset = _default_cleanset(self.layout)
+
+    def before_edit(self) -> None:
+        """Called before an edit is applied: with `lag`, keep the current map for that many
+        saved-map fetches."""
+        if self.lag > 0:
+            self._stale = FakeMap(
+                list(self.layout),
+                dict(self.names),
+                self.zones,
+                {k: list(v) for k, v in self.cleanset.items()},
+                self.room_settings,
+            )
+            self._stale_left = self.lag
+
+    def saved_view(self) -> "FakeMap":
+        """The map a saved-map fetch sees now: the pre-edit copy while lagging, else this."""
+        if self.lag > 0 and self._stale is not None and self._stale_left > 0:
+            self._stale_left -= 1
+            return self._stale
+        return self
 
     def ids(self) -> set[int]:
         return {int(ch) for row in self.layout for ch in row if ch.isdigit()}
@@ -158,8 +203,8 @@ def build_fake_payload(
     seg_inf: dict = {
         str(k): {"name": base64.b64encode(v.encode()).decode()} for k, v in fake_map.names.items()
     }
-    for seg in sorted(fake_map.ids()):
-        seg_inf.setdefault(str(seg), {})
+    for seg, near in layout_neighbours(layout).items():
+        seg_inf.setdefault(str(seg), {})["nei_id"] = sorted(near)
     trailer: dict = {"seg_inf": seg_inf, **fake_map.zones.payload()}
     if cleanset is not None:
         trailer["cleanset"] = cleanset
@@ -181,6 +226,11 @@ def build_fake_payload(
         "curr_id": 0,
     }
     return json.dumps(doc).encode()
+
+
+def fake_saved_payload(fake_map: FakeMap) -> bytes:
+    """The saved map as the cloud serves it (honours `FakeMap.lag`)."""
+    return build_fake_payload(fake_map=fake_map.saved_view())
 
 
 def _live_loop() -> list[tuple[int, int]]:
@@ -292,6 +342,7 @@ class FakeVacuum:
         if not keys <= {"vw", "nsr", "customeClean", "cleanOrder", "msr", "dsrid"}:
             raise DeviceError("unsupported")
         self.edits.append(payload)
+        fm.before_edit()
         if "vw" in payload:
             fm.zones = MapZones.parse(payload["vw"])
         for key, item in (payload.get("nsr") or {}).items():
