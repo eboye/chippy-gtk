@@ -273,6 +273,7 @@ elif [ "$scenario" = edit ]; then
         saved-and-shown
         leave-without-changes
         merge-done
+        merge-keeps-name
         return-keeps-editing
         discard-leaves
         rename-saved

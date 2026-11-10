@@ -676,6 +676,8 @@ class MainWindow(Adw.ApplicationWindow):
         buttons["name"] = centre(self.edit_panel.name_row)
         return {
             "mode": self.editing,
+            "loading": self.editing and self.edit_panel.edited is None,
+            "room_names": {str(r.id): r.name for r in self.map_view.rooms},
             "tool": self.map_view.tool,
             "dirty": self.edit_panel.dirty,
             "room": self.edit_panel.room,

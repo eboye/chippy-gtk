@@ -14,7 +14,7 @@ from chippy.controller import (
 from chippy.core.cloud import CloudSessionExpired
 from chippy.core.device import DeviceError
 from chippy.core.fake import FakeMap, FakeVacuum, _cell_mm, build_fake_payload, fake_saved_payload
-from chippy.core.mapedit import Line, MapZones, Rect
+from chippy.core.mapedit import Line, MapZones, Rect, rename_payload
 from chippy.core.profiles import R2209
 from chippy.store import MapCache, RoomStore
 
@@ -716,6 +716,46 @@ def test_merge_rooms_drops_merged_name(parts):
     assert 2 not in {r.id for r in ctl.rooms}
 
 
+def test_merge_keeps_the_remaining_rooms_robot_name(parts):
+    """The r2209 drops the kept room's name when merging; Chippy sends it again."""
+    ctl, vac, fm, _ev = edit_ctl(parts)
+    kept = {r.id: r.name for r in ctl.rooms}[1]
+    done = []
+    ctl.merge_rooms(ctl._map_id, 1, 2, done.append)
+    assert done == [None]
+    assert [list(e) for e in vac.edits] == [["msr", "mapid"], ["nsr", "mapid"]]
+    assert vac.edits[1] == rename_payload(ctl._map_id, {1: kept})
+    assert fm.names[1] == kept
+    assert {r.id: r.name for r in ctl.rooms}[1] == kept
+
+
+def test_merge_does_not_rename_an_unnamed_room(parts):
+    ctl, vac, fm, _ev = edit_ctl(parts)
+    fm.names.pop(1)  # the robot never had a name for room 1
+    ctl.refresh_map()
+    done = []
+    ctl.merge_rooms(ctl._map_id, 1, 2, done.append)
+    assert done == [None]
+    assert [list(e) for e in vac.edits] == [["msr", "mapid"]]
+
+
+def test_merge_still_succeeds_when_the_name_is_refused(parts):
+    ctl, vac, fm, ev = edit_ctl(parts)
+    real = vac.update_map
+
+    def refuse_names(payload):
+        if "nsr" in payload:
+            raise DeviceError("the robot refused the map change (code -1)", code=-1)
+        real(payload)
+
+    vac.update_map = refuse_names
+    ctl.connect("action-failed", lambda _c, msg: ev.append(("failed", msg)))
+    done = []
+    ctl.merge_rooms(ctl._map_id, 1, 2, done.append)
+    assert done == [None]  # the merge happened; never report it as failed
+    assert any(e[0] == "failed" and "name" in e[1] for e in ev if isinstance(e, tuple))
+
+
 def test_split_room_names_new_room(parts):
     ctl, vac, fm, _ev = edit_ctl(parts)
     ids_before = {r.id for r in ctl.rooms}
@@ -918,7 +958,10 @@ def test_merge_waits_for_the_map_to_show_it(parts):
     ctl.merge_rooms(ctl._map_id, 2, 4, done.append)
     assert done == [] and 4 in {r.id for r in ctl.rooms}
     assert ctl._scheduler.fire_named("map-retry") == 2
-    assert done == [None] and 4 not in {r.id for r in ctl.rooms}
+    assert done == [] and 4 not in {r.id for r in ctl.rooms}  # merged; the name follows
+    assert ctl._scheduler.fire_named("map-retry") == 2  # the restored name lags too
+    assert done == [None]
+    assert {r.id: r.name for r in ctl.rooms}[2] == "Kitchen"
 
 
 def test_split_waits_for_the_new_room_and_names_it(parts):

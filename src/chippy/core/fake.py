@@ -133,6 +133,7 @@ class FakeMap:
             raise DeviceError("cannot merge those rooms")
         self.layout = [row.replace(str(b), str(a)) for row in self.layout]
         self.names.pop(b, None)
+        self.names.pop(a, None)  # like the r2209: the kept room loses its name too
         self.cleanset.pop(str(b), None)
 
     def split(self, seg: int, line: tuple[int, int, int, int]) -> None:

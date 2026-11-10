@@ -195,15 +195,7 @@ class EditSession:
             edits.append(MapEdit("zones", self.zones.payload()))
         renamed = self.renamed(original) if "names" not in off else {}
         if renamed:
-            nsr = {
-                str(seg): {
-                    "name": base64.b64encode(name.encode("utf-8")).decode(),
-                    "type": 0,
-                    "index": 0,
-                }
-                for seg, name in renamed.items()
-            }
-            edits.append(MapEdit("names", {"nsr": nsr, "mapid": self.map_id}))
+            edits.append(MapEdit("names", rename_payload(self.map_id, renamed)))
         # only what the user changed: unknown settings are never sent as defaults
         if "settings" not in off and self.settings and self.settings != original.settings:
             rows = [
@@ -277,6 +269,19 @@ def carry_edits(before: EditSession, edited: EditSession, fresh: EditSession) ->
         out.use_room_settings = edited.use_room_settings
     out.unsupported |= edited.unsupported
     return out
+
+
+def rename_payload(map_id: int, names: dict[int, str]) -> dict:
+    """Custom room names on the robot (`nsr`): base64 UTF-8 name, type 0 (custom)."""
+    nsr = {
+        str(seg): {
+            "name": base64.b64encode(name.encode("utf-8")).decode(),
+            "type": 0,
+            "index": 0,
+        }
+        for seg, name in sorted(names.items())
+    }
+    return {"nsr": nsr, "mapid": map_id}
 
 
 def merge_payload(map_id: int, a: int, b: int) -> dict:

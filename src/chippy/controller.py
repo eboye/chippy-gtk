@@ -21,6 +21,7 @@ from .core.mapedit import (
     parse_cleanset,
     remap_after_merge,
     remap_after_split,
+    rename_payload,
     split_payload,
 )
 from .core.notify import Notifier
@@ -705,7 +706,36 @@ class VacuumController(GObject.Object):
         def merged(frame: MapFrame) -> bool:
             return b not in frame_room_ids(frame)
 
-        self._structural_edit(merge_payload(map_id, a, b), merged, remap, on_done)
+        # The r2209 drops the kept room's name when merging: send it again afterwards.
+        keep = self._frame.names.get(a) if self._frame else None
+        if keep == f"Room {a}":
+            keep = None  # the robot never had a name for it: nothing to restore
+        on_done = self._once(on_done, RuntimeError("Chippy has stopped"))
+
+        def after_merge(error) -> None:
+            if error is not None and not isinstance(error, MapNotUpdated):
+                on_done(error)
+                return
+            if self._stopped or not keep or (self._frame and self._frame.names.get(a) == keep):
+                on_done(error)
+                return
+
+            def renamed(_result, rename_error) -> None:
+                if rename_error is not None:
+                    log.warning("couldn't restore the name of room %s: %s", a, rename_error)
+                    self.emit("action-failed", f"Merged, but couldn't keep the name “{keep}”")
+                    on_done(error)  # the merge itself happened: never report it as failed
+                    return
+                self._refresh_until(
+                    lambda frame: frame.names.get(a) == keep,
+                    lambda shown, _e: (self._rebuild_rooms(), on_done(error)),
+                )
+
+            self._runner.run(
+                lambda: self._vacuum.update_map(rename_payload(map_id, {a: keep})), renamed
+            )
+
+        self._structural_edit(merge_payload(map_id, a, b), merged, remap, after_merge)
 
     def split_room(
         self, map_id: int, seg: int, line: Line, on_done: Callable[[Exception | None], None]

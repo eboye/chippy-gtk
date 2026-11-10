@@ -190,6 +190,8 @@ def check_merge_and_split(window, ctl, vac, fm, toasts):
     assert alert is not None and alert.get_heading() == "Merge Kitchen and Gone?"
     respond(alert, "merge")
     assert 4 not in fm.ids()
+    assert list(vac.edits[-1]) == ["nsr", "mapid"]  # the robot dropped the kept name: re-sent
+    assert fm.names[2] == "Kitchen"
     assert window.editing and window.edit_panel.edited is not None
     assert 4 not in window.edit_panel.edited.names
     assert window.edit_panel.edited.zones == extra  # unsaved zone edits survive
@@ -208,7 +210,7 @@ def check_merge_and_split(window, ctl, vac, fm, toasts):
     top, bottom = _cell_mm(mid_x, ys[0] - 1), _cell_mm(mid_x, ys[-1] + 2)
     middle = _cell_mm(mid_x, (ys[0] + ys[-1]) / 2)
     window.map_view.emit("split-line", 1, Line(*top, *middle))  # ends inside: not sent
-    assert window._alert is None and len(vac.edits) == edits_before + 1
+    assert window._alert is None and len(vac.edits) == edits_before + 2  # merge + its name
     assert window.hint.get_label() == "Draw the line across Lounge, edge to edge"
     real_update = vac.update_map
 

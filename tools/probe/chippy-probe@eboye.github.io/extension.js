@@ -380,6 +380,11 @@ export default class ChippyProbe extends Extension {
         }
         this._check('merge-done', asked && roomCount() === roomsBefore - 1,
             `asked=${asked} before=${roomsBefore} now=${roomCount()} ${JSON.stringify(edited())}`);
+        // The robot drops the kept room's name on a merge; Chippy sends it again and
+        // reloads the session once the map shows it.
+        const keptName = await this._waitFor(
+            () => !edited().loading && edited().room_names?.['2'] === 'Kitchen', 20000);
+        this._check('merge-keeps-name', keptName, JSON.stringify(edited()));
         await this._sleep(1000);
         await this._shot('edit-merged');
 
