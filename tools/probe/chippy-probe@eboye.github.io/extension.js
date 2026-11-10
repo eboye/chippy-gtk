@@ -279,7 +279,8 @@ export default class ChippyProbe extends Extension {
         this._check('delete-after-draw',
             await this._waitFor(() => this._state().edit.zones.no_go === 0, 3000),
             JSON.stringify(this._state().edit));
-        await this._draw('no_go', 'no_go', a, b, 1);
+        const redrawn = await this._draw('no_go', 'no_go', a, b, 1);
+        this._check('no-go-redrawn', redrawn, JSON.stringify(this._state().edit));
 
         // Select tool: move the zone by its body, then resize by a corner
         await this._chooseTool('select');
@@ -290,7 +291,8 @@ export default class ChippyProbe extends Extension {
         const r1 = rect();
         // moved: same size, shifted right
         this._check('zone-moved', edited().zones.no_go === 1 && edited().dirty && r1[0] > r0[0] &&
-            r1[2] > r0[2] && r1[2] - r1[0] === r0[2] - r0[0] && r1[3] - r1[1] === r0[3] - r0[1],
+            r1[2] > r0[2] && Math.abs((r1[2] - r1[0]) - (r0[2] - r0[0])) < 1 &&
+            Math.abs((r1[3] - r1[1]) - (r0[3] - r0[1])) < 1,
             `${JSON.stringify(r0)} -> ${JSON.stringify(r1)}`);
         const b2 = [b[0] + 40, b[1]];
         await this._dragApp(b2, [b2[0] + 30, b2[1] + 30]);
@@ -300,23 +302,34 @@ export default class ChippyProbe extends Extension {
         this._check('zone-resized', edited().zones.no_go === 1 && r2[0] === r1[0] && r2[3] === r1[3] &&
             r2[2] > r1[2] && r2[1] < r1[1], `${JSON.stringify(r1)} -> ${JSON.stringify(r2)}`);
         await this._shot('edit-resized');
+        // Empty map space: above the topmost room, in line with the leftmost label
+        const labels = Object.values(this._state().rooms);
+        const empty = [Math.min(...labels.map(p => p[0])), Math.min(...labels.map(p => p[1])) - 110];
+        // The zone is still selected from the resize: deselect it first
+        await this._clickApp(empty);
+        await this._waitFor(() => edited().selected_zone === null, 3000);
+        const deselected = edited().selected_zone === null && edited().zones.no_go === 1;
         await this._clickApp([mid[0] + 40, mid[1]]);
-        await this._sleep(300);
+        const selected = await this._waitFor(() => edited().selected_zone !== null, 3000);
         await this._key(Clutter.KEY_Delete);
-        this._check('delete-after-click',
-            await this._waitFor(() => edited().zones.no_go === 0, 3000), JSON.stringify(edited()));
-        await this._draw('no_go', 'no_go', a, b, 1);
+        this._check('delete-after-click', deselected && selected &&
+            await this._waitFor(() => edited().zones.no_go === 0, 3000),
+            `deselected=${deselected} selected=${selected} ${JSON.stringify(edited())}`);
+        const again = await this._draw('no_go', 'no_go', a, b, 1);
+        this._check('no-go-redrawn-2', again, JSON.stringify(edited()));
 
         // Select tool on empty map: pans, no zone changes
         await this._chooseTool('select');
+        const zoneBefore = JSON.stringify(edited().no_go_rects);
         const before = this._state().rooms['3'];
-        await this._dragApp(before, [before[0] + 60, before[1] + 40]);
+        await this._dragApp(empty, [empty[0] + 60, empty[1] + 40]);
         const after = this._state().rooms['3'];
-        const moved = Boolean(after) &&
+        const moved = Boolean(before) && Boolean(after) &&
             (Math.abs(after[0] - before[0]) > 20 || Math.abs(after[1] - before[1]) > 20);
-        this._check('select-drag-pans', moved && edited().zones.no_go === 1 &&
-            edited().zones.walls === 0,
-            `before=${JSON.stringify(before)} after=${JSON.stringify(after)} ${JSON.stringify(edited())}`);
+        this._check('select-drag-pans', moved && JSON.stringify(edited().no_go_rects) === zoneBefore &&
+            edited().zones.no_go === 1 && edited().zones.walls === 0,
+            `before=${JSON.stringify(before)} after=${JSON.stringify(after)} ` +
+            `${zoneBefore} -> ${JSON.stringify(edited().no_go_rects)} ${JSON.stringify(edited())}`);
 
         // Wall (rooms[2] is a different spot than the zone)
         const [kx, ky] = this._state().rooms['2'];
@@ -326,13 +339,28 @@ export default class ChippyProbe extends Extension {
         await this._shot('edit-drawn');
 
         // Save
+        const savedRect = JSON.stringify(rect());
         await this._clickApp(edited().buttons.save);
         const left = await this._waitFor(() => edited().mode === false, 10000);
-        await this._sleep(2500);
-        this._check('saved-and-shown',
-            left && edited().zones.no_go === 1 && edited().zones.walls === 1,
-            JSON.stringify(edited()));
+        // Outside edit mode the zones come from the refreshed map; the pre-save frame had none,
+        // so waiting for them proves the robot kept the save and the refresh landed.
+        const shown = left && await this._waitFor(
+            () => edited().zones.no_go === 1 && edited().zones.walls === 1, 10000);
+        await this._sleep(500);
         await this._shot('edit-saved');
+        // A fresh session comes from the robot's map: it must hold the same zone and wall
+        await this._clickApp(edited().buttons.edit);
+        await this._waitFor(() => edited().mode === true && edited().buttons.merge !== null, 8000);
+        await this._sleep(1000);
+        const reloaded = edited().zones.no_go === 1 && edited().zones.walls === 1 &&
+            JSON.stringify(rect()) === savedRect;
+        this._check('saved-and-shown', shown && reloaded,
+            `left=${left} shown=${shown} saved=${savedRect} now=${JSON.stringify(edited())}`);
+        // No changes: leaving needs no confirmation
+        await this._clickApp(edited().buttons.edit);
+        const quiet = await this._waitFor(() => edited().mode === false, 4000);
+        this._check('leave-without-changes', quiet && edited().alert === null,
+            JSON.stringify(edited()));
 
         // Merge Kitchen and Hallway
         await this._clickApp(edited().buttons.edit);
@@ -358,22 +386,25 @@ export default class ChippyProbe extends Extension {
         // Cancel with unsaved changes: Return keeps editing, Discard leaves
         await this._waitFor(() => edited().mode === true && !edited().alert, 5000);
         const [mx, my] = this._state().rooms['1'];
-        await this._draw('no_mop', 'no_mop', [mx - 70, my - 50], [mx + 50, my + 40], 1);
+        const mopDrawn = await this._draw('no_mop', 'no_mop', [mx - 70, my - 50], [mx + 50, my + 40], 1);
+        this._check('no-mop-drawn', mopDrawn, JSON.stringify(edited()));
         await this._clickApp(edited().buttons.cancel);
         const discarding = await this._waitFor(
             () => edited().alert?.heading === 'Discard changes?', 4000);
         await this._sleep(400);
         await this._shot('edit-discard-ask');
         await this._key(Clutter.KEY_Return);
-        await this._sleep(600);
-        this._check('return-keeps-editing', discarding && edited().mode === true,
-            JSON.stringify(edited()));
-        if (edited().alert === null)
-            await this._clickApp(edited().buttons.cancel);
-        await this._waitFor(() => edited().alert?.buttons?.discard, 4000);
-        await this._clickApp(edited().alert.buttons.discard);
-        this._check('discard-leaves', await this._waitFor(() => edited().mode === false, 5000),
-            JSON.stringify(edited()));
+        const closed = await this._waitFor(() => edited().alert === null, 4000);
+        await this._sleep(400);
+        this._check('return-keeps-editing', discarding && closed && edited().mode === true,
+            `discarding=${discarding} closed=${closed} ${JSON.stringify(edited())}`);
+        await this._clickApp(edited().buttons.cancel);
+        const asked2 = await this._waitFor(() => edited().alert?.buttons?.discard, 4000);
+        if (asked2)
+            await this._clickApp(edited().alert.buttons.discard);
+        this._check('discard-leaves',
+            asked2 && await this._waitFor(() => edited().mode === false, 5000),
+            `asked=${Boolean(asked2)} ${JSON.stringify(edited())}`);
         await this._shot('edit-done');
     }
 

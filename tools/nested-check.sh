@@ -252,8 +252,12 @@ if [ "$scenario" = signin ]; then
     )
 elif [ "$scenario" = edit ]; then
     required_checks=(
+        app-window-opens
         edit-mode-on
         no-go-drawn
+        no-go-redrawn
+        no-go-redrawn-2
+        no-mop-drawn
         delete-after-draw
         zone-moved
         zone-resized
@@ -261,6 +265,7 @@ elif [ "$scenario" = edit ]; then
         select-drag-pans
         wall-drawn
         saved-and-shown
+        leave-without-changes
         merge-done
         return-keeps-editing
         discard-leaves

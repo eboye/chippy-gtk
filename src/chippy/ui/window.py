@@ -633,6 +633,7 @@ class MainWindow(Adw.ApplicationWindow):
                 "walls": len(zones.walls),
             },
             "no_go_rects": [r.as_list() for r in zones.no_go],
+            "selected_zone": list(self.map_view.selected_zone or ()) or None,
             # an open confirmation (Discard / Merge / Split) and its buttons by response id;
             # Return accepts Merge / Split but keeps editing on Discard
             "alert": (
