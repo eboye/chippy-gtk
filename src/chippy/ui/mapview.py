@@ -27,6 +27,8 @@ DRAG_THRESHOLD = 3  # px before a press becomes a drag
 TOOLS = (None, "select", "no_go", "no_mop", "wall", "order", "split", "merge")
 _ZONE_FIELD = {"no_go": "no_go", "no_mop": "no_mop", "wall": "walls"}
 _ZONE_COLOR = {"no_go": "#e01b24", "no_mop": "#3584e4", "wall": "#e01b24"}
+_ZONE_TOOLS = ("select", "no_go", "no_mop", "wall")  # tools that show and edit zones
+HATCH_SPACING = 8  # px between a zone's diagonal stripes, whatever the zoom
 _DELETE_KEYS = (Gdk.KEY_Delete, Gdk.KEY_KP_Delete, Gdk.KEY_BackSpace)
 
 
@@ -156,7 +158,8 @@ class MapView(Gtk.Widget):
 
     def set_zones(self, zones: MapZones, geom: MapGeometry | None) -> None:
         """Programmatic: emits nothing. The zone selection survives only an echo of the same
-        zones (as after our own `zones-edited`)."""
+        zones (as after our own `zones-edited`); otherwise it is cleared silently, without
+        `zone-selected`, so callers read `selected_zone` afterwards."""
         if zones != self.zones or geom is None:
             self.selected_zone = None
         self.zones, self.geom = zones, geom
@@ -168,12 +171,13 @@ class MapView(Gtk.Widget):
         self.queue_draw()
 
     def set_tool(self, tool: str | None) -> None:
-        """Programmatic: emits nothing. Leaving edit mode (None) drops the zone selection."""
+        """Programmatic: emits nothing. Tools that cannot show or edit a zone (None, order,
+        merge, split) drop the zone selection silently."""
         if tool not in TOOLS:
             raise ValueError(f"unknown map tool {tool!r}")
         self.tool = tool
         self._split_seg = 0
-        if tool is None:
+        if tool not in _ZONE_TOOLS:
             self.selected_zone = None
         self.set_focusable(tool is not None)
         self._reset_drag()
@@ -215,7 +219,9 @@ class MapView(Gtk.Widget):
     # input -----------------------------------------------------------------
     def _on_click(self, _gesture, n_press, x, y) -> None:
         if self.tool is not None:
-            if n_press == 1 and not self._dragged:
+            if n_press == 2:
+                self.reset_view()  # the first release already did the click's work
+            elif n_press == 1 and not self._dragged:
                 self._tool_click(x, y)
             return
         if n_press == 2:
@@ -280,7 +286,7 @@ class MapView(Gtk.Widget):
             self.queue_draw()
 
     def _on_key(self, _ctl, keyval, _keycode, _state) -> bool:
-        if self.tool is None or self.selected_zone is None or keyval not in _DELETE_KEYS:
+        if self.tool not in _ZONE_TOOLS or self.selected_zone is None or keyval not in _DELETE_KEYS:
             return False
         kind, index = self.selected_zone
         self.zones = _with_zone(self.zones, kind, index, None)
@@ -312,6 +318,8 @@ class MapView(Gtk.Widget):
         self._reset_drag()
         self._drag_start = (x, y)
         self._drag_mode = self._drag_mode_at(x, y)
+        if self.tool is not None:
+            self.grab_focus()  # a claimed drag never reaches the click's release
 
     def _on_drag_update(self, gesture, dx, dy) -> None:
         if self.tool is not None and self._drag_mode != "pan":
@@ -461,18 +469,34 @@ class MapView(Gtk.Widget):
         snapshot.append_stroke(path, stroke, _rgba(color))
 
     def _box(self, snapshot, box, kind, dashed=False) -> None:
-        fill = _rgba(_ZONE_COLOR[kind])
-        fill.alpha = 0.25
-        snapshot.append_color(fill, box)
+        """A zone: light tint, diagonal hatching clipped to it, and its border."""
+        tint = _rgba(_ZONE_COLOR[kind])
+        tint.alpha = 0.12
+        snapshot.append_color(tint, box)
+        x, y, w, h = box.get_x(), box.get_y(), box.get_width(), box.get_height()
+        # Lines x + y = k * spacing in widget px: fixed on screen, so zooming never
+        # changes the stripes' spacing or width.
+        hatch = Gsk.PathBuilder.new()
+        for k in range(
+            math.floor((x + y) / HATCH_SPACING), math.ceil((x + w + y + h) / HATCH_SPACING) + 1
+        ):
+            c = k * HATCH_SPACING
+            hatch.move_to(c - y, y)
+            hatch.line_to(c - y - h, y + h)
+        stripe = _rgba(_ZONE_COLOR[kind])
+        stripe.alpha = 0.6
+        snapshot.push_clip(box)
+        self._stroke(snapshot, hatch, 1.5, stripe.to_string())
+        snapshot.pop()
         builder = Gsk.PathBuilder.new()
         builder.add_rect(box)
         self._stroke(snapshot, builder, 2, _ZONE_COLOR[kind], dashed)
 
-    def _wall(self, snapshot, a, b, dashed=False) -> None:
+    def _wall(self, snapshot, a, b, dashed=False, color=_ZONE_COLOR["wall"]) -> None:
         builder = Gsk.PathBuilder.new()
         builder.move_to(*a)
         builder.line_to(*b)
-        self._stroke(snapshot, builder, 3, _ZONE_COLOR["wall"], dashed)
+        self._stroke(snapshot, builder, 3, color, dashed)
 
     def _zones(self, snapshot) -> None:
         """No-mop, no-go, walls (bottom to top, as `hit_zone` sees them), the selected zone's
@@ -501,6 +525,9 @@ class MapView(Gtk.Widget):
             a, b = (self.viewport.to_widget(*cell) for cell in self._preview)
             if self.tool in ("no_go", "no_mop"):
                 self._box(snapshot, self._widget_rect(a, b), self.tool, dashed=True)
+            elif self.tool == "split":
+                accent = Adw.StyleManager.get_default().get_accent_color_rgba()
+                self._wall(snapshot, a, b, dashed=True, color=accent.to_string())
             else:
                 self._wall(snapshot, a, b, dashed=True)
 

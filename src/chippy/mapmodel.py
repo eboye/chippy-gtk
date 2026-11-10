@@ -180,25 +180,28 @@ def hit_zone(
 
     Drawn bottom to top as no-mop, no-go, walls, each in list order, so the topmost is the
     last wall, then the last no-go, ... Handles (rect corners, wall ends) of any zone beat
-    every body."""
+    every body. A handle's reach is capped at a third of the zone's smaller side (a wall's
+    length), so a small zone seen zoomed out still has a body to grab."""
     stack = [("wall", i, w) for i, w in reversed(list(enumerate(zones.walls)))]
     stack += [("no_go", i, r) for i, r in reversed(list(enumerate(zones.no_go)))]
     stack += [("no_mop", i, r) for i, r in reversed(list(enumerate(zones.no_mop)))]
 
-    def near(point) -> bool:
+    def near(point, reach) -> bool:
         x, y = geom.to_cell(*point)
-        return abs(x - cx) <= tolerance_cells and abs(y - cy) <= tolerance_cells
+        return abs(x - cx) <= reach and abs(y - cy) <= reach
 
     for kind, index, shape in stack:
         if kind == "wall":
             ends = [(shape.x1, shape.y1), (shape.x2, shape.y2)]
-            for n, end in enumerate(ends):
-                if near(end):
-                    return kind, index, f"end{n}"
+            size = math.hypot(shape.x2 - shape.x1, shape.y2 - shape.y1)
+            parts = [(end, f"end{n}") for n, end in enumerate(ends)]
         else:
-            for n, corner in enumerate(rect_corners(shape)):
-                if near(corner):
-                    return kind, index, f"c{n}"
+            size = min(shape.x2 - shape.x1, shape.y2 - shape.y1)
+            parts = [(corner, f"c{n}") for n, corner in enumerate(rect_corners(shape))]
+        reach = min(tolerance_cells, size / geom.grid_mm / 3)
+        for point, part in parts:
+            if near(point, reach):
+                return kind, index, part
     for kind, index, shape in stack:
         if kind == "wall":
             a, b = geom.to_cell(shape.x1, shape.y1), geom.to_cell(shape.x2, shape.y2)

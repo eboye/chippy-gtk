@@ -123,6 +123,14 @@ def test_hit_zone_overlaps_topmost_wins_and_handles_beat_bodies():
     assert hit_zone(ZONES, GEOM, 5, 5, 0.3) == ("no_go", 0, "c2")
 
 
+def test_hit_zone_handle_reach_is_capped_for_small_zones():
+    small = MapZones(no_go=(Rect(0, 1600, 200, 2000),))  # cells x 0..1, y 0..2
+    assert hit_zone(small, GEOM, 0.5, 1, 0.8) == ("no_go", 0, "body")
+    assert hit_zone(small, GEOM, 0.1, 0.1, 0.8) == ("no_go", 0, "c3")
+    wall = MapZones(walls=(Line(0, 1000, 300, 1000),))  # 1.5 cells long
+    assert hit_zone(wall, GEOM, 0.75, 5, 0.8) == ("wall", 0, "body")
+
+
 def test_live_from_frame_without_robot():
     saved = decode_map(build_fake_payload())
     live = live_from_frame(saved, saved, grid_from_frame(saved))

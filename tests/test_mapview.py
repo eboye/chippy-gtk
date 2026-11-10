@@ -324,23 +324,129 @@ def test_order_badges_number_visible_rooms():
     assert view.order_badges() == {}
 
 
-def test_snapshot_draws_zones_previews_handles_and_badges():
-    zones = MapZones(
-        no_go=(Rect(0, 1000, 1000, 1600),),
-        no_mop=(Rect(-1000, 1000, 0, 1600),),
-        walls=(Line(0, 600, 1000, 600),),
-    )
-    for tool in ("select", "wall", "no_mop"):
+def test_drags_with_a_tool_take_keyboard_focus():
+    # A claimed drag never reaches the click's release, so the drag must grab focus itself
+    # for Delete / BackSpace to reach the view.
+    zones = MapZones(no_go=(Rect(0, 1000, 1000, 1600),))
+    for tool, start, end in (
+        ("select", (500, 1300), (900, 1300)),
+        ("no_go", (2000, 1000), (3000, 1600)),
+        (None, (500, 1300), (900, 1300)),
+    ):
         view, _events = _edit_view(tool, zones)
-        view.set_order([1, 2])
+        focus = []
+        view.grab_focus = lambda focus=focus: focus.append(True)
+        _drag(view, start, end)
+        assert focus == ([] if tool is None else [True]), tool
+
+
+def test_tools_that_cannot_edit_zones_drop_the_selection():
+    zones = MapZones(no_go=(Rect(0, 1000, 1000, 1600),))
+    for tool in ("order", "merge", "split", None):
+        view, events = _edit_view("select", zones)
         _click(view, 500, 1300)
-        x0, y0 = _at(view, 2000, 1200)
-        view._on_drag_begin(None, x0, y0)
-        view._on_drag_update(None, 40, 30)  # preview while dragging
-        snapshot = Gtk.Snapshot()
-        view.do_snapshot(snapshot)
-        assert snapshot.to_node() is not None
-    view, _events = _edit_view("select", zones, None)
+        view.set_tool(tool)
+        assert view.selected_zone is None
+        events.clear()
+        assert view._on_key(None, Gdk.KEY_BackSpace, 0, 0) is False
+        assert events == [] and view.zones == zones
+    for tool in ("no_go", "no_mop", "wall"):
+        view, events = _edit_view("select", zones)
+        _click(view, 500, 1300)
+        view.set_tool(tool)
+        assert view.selected_zone == ("no_go", 0)
+        assert view._on_key(None, Gdk.KEY_Delete, 0, 0) is True
+
+
+def test_double_click_with_a_tool_fits_the_view():
+    view, events = _edit_view("order")
+    view.viewport.zoom_at(2.0, 420, 210)
+    x, y = view.viewport.to_widget(*GEOM.to_cell(3000, 1200))
+    view._on_click(None, 1, x, y)
+    view._on_click(None, 2, x, y)
+    assert events == [("room-picked", 1)]  # only the first release picks
+    assert view.viewport.scale == pytest.approx(view.viewport.fit_scale())
+
+
+def _render(view):
+    """The view's snapshot rendered to RGBA pixels: pixel(x, y) -> (r, g, b, a)."""
+    gi.require_version("Gsk", "4.0")
+    gi.require_version("Graphene", "1.0")
+    from gi.repository import Graphene, Gsk
+
     snapshot = Gtk.Snapshot()
     view.do_snapshot(snapshot)
-    assert snapshot.to_node() is not None
+    renderer = Gsk.CairoRenderer()
+    renderer.realize_for_display(Gdk.Display.get_default())
+    texture = renderer.render_texture(snapshot.to_node(), Graphene.Rect().init(0, 0, 840, 420))
+    renderer.unrealize()
+    downloader = Gdk.TextureDownloader.new(texture)
+    downloader.set_format(Gdk.MemoryFormat.R8G8B8A8)
+    data, stride = downloader.download_bytes()
+    data = data.get_data()
+
+    def pixel(x, y):
+        i = int(y) * stride + int(x) * 4
+        return tuple(data[i : i + 4])
+
+    return pixel
+
+
+# Room 1's right part, away from its label and the charger: cells x 32..37, rows 4..8.
+FREE = Rect(2400, 600, 3400, 1400)
+
+
+def test_zones_are_hatched_with_handles_on_the_selected_one():
+    view, _events = _edit_view("select", MapZones(no_go=(FREE,)))
+    plain = _render(_edit_view("select")[0])
+    _click(view, 2900, 1000)
+    hatched = _render(view)
+    x, y = _at(view, 2900, 1000)
+    run = [hatched(x + dx, y) for dx in range(16)]
+    assert len(set(run)) > 2  # stripes, not a flat tint
+    assert len({plain(x + dx, y) for dx in range(16)}) == 1  # the room alone is flat
+    assert hatched(*_at(view, 2400, 600)) == (255, 255, 255, 255)  # c0 handle
+    # Stripes stay HATCH_SPACING apart on screen whatever the zoom.
+    from chippy.ui.mapview import HATCH_SPACING
+
+    reds = [dx for dx, (r, g, b, _a) in enumerate(run) if r - g > 60]
+    view.viewport.zoom_at(2.0, x, y)
+    zoomed = [hatched_px for hatched_px in (_render(view)(x + dx, y) for dx in range(16))]
+    zoomed_reds = [dx for dx, (r, g, b, _a) in enumerate(zoomed) if r - g > 60]
+    for stripes in (reds, zoomed_reds):
+        starts = [dx for dx in stripes if dx - 1 not in stripes]
+        assert len(starts) >= 2
+        assert starts[1] - starts[0] == HATCH_SPACING
+
+
+def test_previews_and_badges_are_drawn():
+    view, _events = _edit_view("no_mop")
+    before = _render(view)
+    x0, y0 = _at(view, 2400, 600)
+    view._on_drag_begin(None, x0, y0)
+    view._on_drag_update(None, 80, -60)
+    inside = (x0 + 40, y0 - 30)
+    assert _render(view)(*inside) != before(*inside)
+    # Split: an accent line, not the red wall style.
+    lines = {}
+    for tool in ("wall", "split"):
+        view, _events = _edit_view(tool)
+        view._split_seg = 1
+        view._on_drag_begin(None, x0, y0)
+        view._on_drag_update(None, 60, 0)
+        lines[tool] = _render(view)(x0 + 3, y0)
+    assert lines["wall"] != lines["split"]
+    assert lines["wall"][0] > lines["wall"][2]  # red
+    # Order badges add pixels at the label's top-right; zones without geometry draw nothing.
+    view = _view()
+    plain = _render(view)
+    view.set_order([1])
+    badged = _render(view)
+    lx, ly = view.label_points()[1]
+    assert any(
+        plain(lx + dx, ly + dy) != badged(lx + dx, ly + dy)
+        for dx in range(0, 80, 2)
+        for dy in range(-40, 0, 2)
+    )
+    view, _events = _edit_view("select", MapZones(no_go=(FREE,)), None)
+    assert _render(view)(*_at(view, 2900, 1000)) == plain(*_at(view, 2900, 1000))
