@@ -95,6 +95,7 @@ class MapView(Gtk.Widget):
         self.order: list[int] | None = None
         self.tool: str | None = None
         self.selected_zone: tuple[str, int] | None = None
+        self.zones_editable = True  # False: zones can be selected but not drawn or changed
         self._split_seg = 0  # room picked by the split tool, waiting for its line
         self._drag_mode: str | None = None  # pan | edit | draw | none, per drag
         self._drag_start = (0.0, 0.0)
@@ -165,6 +166,12 @@ class MapView(Gtk.Widget):
         self.zones, self.geom = zones, geom
         self._reset_drag()
         self.queue_draw()
+
+    def set_zones_editable(self, editable: bool) -> None:
+        """False when the robot refused zone edits: select only, no drawing, moving,
+        resizing or deleting."""
+        self.zones_editable = editable
+        self._reset_drag()
 
     def set_order(self, order: list[int] | None) -> None:
         self.order = None if order is None else list(order)
@@ -286,7 +293,9 @@ class MapView(Gtk.Widget):
             self.queue_draw()
 
     def _on_key(self, _ctl, keyval, _keycode, _state) -> bool:
-        if self.tool not in _ZONE_TOOLS or self.selected_zone is None or keyval not in _DELETE_KEYS:
+        if not self.zones_editable or self.tool not in _ZONE_TOOLS:
+            return False
+        if self.selected_zone is None or keyval not in _DELETE_KEYS:
             return False
         kind, index = self.selected_zone
         self.zones = _with_zone(self.zones, kind, index, None)
@@ -298,10 +307,10 @@ class MapView(Gtk.Widget):
         """What a drag starting at (x, y) does with the current tool."""
         editable = self.geom is not None and self.viewport is not None
         if self.tool in ("no_go", "no_mop", "wall"):
-            return "draw" if editable else "none"
+            return "draw" if editable and self.zones_editable else "none"
         if self.tool == "split" and self._split_seg:
             return "draw" if editable else "none"
-        if self.tool == "select":
+        if self.tool == "select" and self.zones_editable:
             self._edit = self._hit(x, y)
             if self._edit:
                 return "edit"

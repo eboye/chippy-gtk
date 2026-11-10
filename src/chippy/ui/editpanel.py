@@ -28,16 +28,19 @@ def confirm(
     cancel: tuple[str, str] = ("cancel", "Cancel"),
     destructive: bool = True,
     on_close=None,
+    accept_on_return: bool = True,
 ) -> Adw.AlertDialog:
-    """Ask before doing something; Return picks `accept` (the probe relies on it)."""
+    """Ask before doing something. Return picks `accept` unless `accept_on_return` is False
+    (then it picks `cancel`, like Escape)."""
     dialog = Adw.AlertDialog(heading=heading, body=body)
     dialog.add_response(*cancel)
     dialog.add_response(*accept)
+    dialog.chippy_responses = (cancel[0], accept[0])  # for alert_buttons()
     dialog.set_response_appearance(
         accept[0],
         Adw.ResponseAppearance.DESTRUCTIVE if destructive else Adw.ResponseAppearance.SUGGESTED,
     )
-    dialog.set_default_response(accept[0])
+    dialog.set_default_response(accept[0] if accept_on_return else cancel[0])
     dialog.set_close_response(cancel[0])
 
     def responded(_dialog, response):
@@ -49,6 +52,23 @@ def confirm(
     dialog.connect("response", responded)
     dialog.present(parent)
     return dialog
+
+
+def alert_buttons(dialog: Adw.AlertDialog) -> dict[str, Gtk.Widget]:
+    """Response id -> its button, for a dialog made by `confirm` (the test hook clicks them)."""
+    labels = {dialog.get_response_label(r): r for r in getattr(dialog, "chippy_responses", ())}
+    found: dict[str, Gtk.Widget] = {}
+
+    def walk(widget):
+        child = widget.get_first_child()
+        while child is not None:
+            if isinstance(child, Gtk.Button) and child.get_label() in labels:
+                found[labels[child.get_label()]] = child
+            walk(child)
+            child = child.get_next_sibling()
+
+    walk(dialog)
+    return found
 
 
 def mark_unsupported(widget: Gtk.Widget, unsupported: bool) -> None:
@@ -202,17 +222,9 @@ class EditPanel(Gtk.Box):
         self.content_stack.set_visible_child_name("loading")
         self._update_actions()
 
-    def set_session(
-        self,
-        original: EditSession,
-        edited: EditSession,
-        profile,
-        keep_zones: MapZones | None = None,
-    ) -> None:
-        """Show a session; `keep_zones` re-applies unsaved zone edits onto a fresh one."""
+    def set_session(self, original: EditSession, edited: EditSession, profile) -> None:
+        """Show a session (after a merge or split, `edited` comes from `carry_edits`)."""
         self.original, self.edited, self.profile = original, edited, profile
-        if keep_zones is not None:
-            edited.zones = keep_zones
         if self.room not in edited.names:
             self.room = 0
         self.zone, self._picks = None, []
@@ -289,11 +301,12 @@ class EditPanel(Gtk.Box):
     def set_zones(self, zones: MapZones) -> None:
         if self.edited is None:
             return
-        self.edited.zones = zones
+        if "zones" not in self.edited.unsupported:  # read-only: the map redraws the staged ones
+            self.edited.zones = zones
         self._changed()
 
     def delete_zone(self) -> None:
-        if self.edited is None or self.zone is None:
+        if self.edited is None or self.zone is None or "zones" in self.edited.unsupported:
             return
         kind, index = self.zone
         field = _ZONE_FIELD[kind]
@@ -323,6 +336,7 @@ class EditPanel(Gtk.Box):
             self.discard,
             cancel=("keep", "Keep editing"),
             on_close=closed,
+            accept_on_return=False,  # Return never discards: that takes a click on Discard
         )
 
     def discard(self) -> None:
@@ -405,4 +419,5 @@ class EditPanel(Gtk.Box):
         if not hasattr(self, "save_button"):
             return
         self.save_button.set_sensitive(self.dirty and not self._saving and self._allowed)
-        self.cancel_button.set_sensitive(not self._saving)
+        # not while a save runs, nor while a session loads (also during a merge or split)
+        self.cancel_button.set_sensitive(not self._saving and self.edited is not None)

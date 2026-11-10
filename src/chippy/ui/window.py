@@ -9,9 +9,9 @@ gi.require_version("Graphene", "1.0")
 from gi.repository import Adw, GObject, Graphene, Gtk  # noqa: E402
 
 from .. import APP_ID  # noqa: E402
-from ..core.mapedit import MapZones  # noqa: E402
+from ..core.mapedit import EditSession, MapZones, carry_edits  # noqa: E402
 from ..mapmodel import geometry_from_frame  # noqa: E402
-from .editpanel import EditPanel, confirm, mark_unsupported  # noqa: E402
+from .editpanel import EditPanel, alert_buttons, confirm, mark_unsupported  # noqa: E402
 from .mapview import MapView  # noqa: E402
 from .sidebar import Sidebar  # noqa: E402
 
@@ -222,9 +222,9 @@ class MainWindow(Adw.ApplicationWindow):
         self.stack.set_visible_child_name(state if state != "ready" else "main")
         ctl = self.app.controller if state == "ready" else None
         if ctl is not self._ctl:
+            self._disconnect_controller()
             if self.editing:
                 self._leave_edit()  # signed out or restarted: the session belongs to the old one
-            self._disconnect_controller()
             self.selected = set()
             if ctl is not None:
                 self._ctl = ctl
@@ -394,8 +394,9 @@ class MainWindow(Adw.ApplicationWindow):
         self._choose_tool("select")
         self._load_session()
 
-    def _load_session(self, keep_zones: MapZones | None = None, unsupported=()) -> None:
-        """Ask the controller for a session; `keep_zones` survive a merge or split."""
+    def _load_session(self, carry: tuple[EditSession, EditSession] | None = None) -> None:
+        """Ask the controller for a session. After a merge or split, `carry` is the previous
+        (original, edited) pair whose unsaved edits move onto the new session."""
         ctl, generation = self._ctl, self._edit_generation
         self._set_busy(True)
         self.edit_panel.begin()
@@ -408,9 +409,8 @@ class MainWindow(Adw.ApplicationWindow):
                 self.toast(f"Can't edit the map: {error}")
                 self._leave_edit()
                 return
-            edited = session.copy()
-            edited.unsupported |= set(unsupported)
-            self.edit_panel.set_session(session, edited, ctl.profile, keep_zones)
+            edited = carry_edits(*carry, session) if carry is not None else session.copy()
+            self.edit_panel.set_session(session, edited, ctl.profile)
             self.edit_panel.set_tool(self.map_view.tool)
             self._apply_unsupported_tools()
             self._edit_changed()
@@ -430,6 +430,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.side_actions.set_visible_child_name("controls")
         self.toolbar.set_visible(False)
         self.map_view.set_tool(None)
+        self.map_view.set_zones_editable(True)
         self.map_view.set_sensitive(True)
         self.hint.set_label(BROWSE_HINT)
         self.refresh(map_too=True)
@@ -469,6 +470,7 @@ class MainWindow(Adw.ApplicationWindow):
         off = edited.unsupported if edited is not None else set()
         for tool, kind in _TOOL_KIND.items():
             mark_unsupported(self.tool_buttons[tool], kind in off)
+        self.map_view.set_zones_editable("zones" not in off)
         if _TOOL_KIND.get(self.map_view.tool) in off:
             self._choose_tool("select")
 
@@ -501,9 +503,16 @@ class MainWindow(Adw.ApplicationWindow):
     def _update_edit_allowed(self) -> None:
         """The Edit toggle follows `can_edit`; edit mode ends when the robot gets busy."""
         can = self._ctl is not None and self._ctl.can_edit
-        self.edit_button.set_sensitive(can)
+        saving = self.edit_panel.saving
+        self.edit_button.set_sensitive(can and not saving)
         self.edit_panel.set_allowed(can)
-        if self.editing and self._could_edit and not can and not self.edit_panel.saving:
+        if saving:
+            return  # judged again when the save is over (`_could_edit` keeps its value)
+        if self.editing and self._could_edit and not can:
+            if self._alert is not None:  # never two dialogs: the merge/split question goes
+                alert, self._alert = self._alert, None
+                alert.force_close()
+                self._alert_closed()
             self.edit_panel.cancel()  # leaves at once, or asks first when there are changes
         self._could_edit = can
 
@@ -574,7 +583,7 @@ class MainWindow(Adw.ApplicationWindow):
                 panel.set_tool(self.map_view.tool)
                 self._edit_changed()
                 return
-            self._load_session(keep_zones=edited.zones, unsupported=edited.unsupported)
+            self._load_session(carry=(original, edited))
 
         if kind == "merge":
             ctl.merge_rooms(edited.map_id, *args, done)
@@ -622,8 +631,16 @@ class MainWindow(Adw.ApplicationWindow):
                 "no_mop": len(zones.no_mop),
                 "walls": len(zones.walls),
             },
-            # an open confirmation (Discard / Merge / Split): Return accepts it
-            "alert": dialog.get_heading() if isinstance(dialog, Adw.AlertDialog) else None,
+            # an open confirmation (Discard / Merge / Split) and its buttons by response id;
+            # Return accepts Merge / Split but keeps editing on Discard
+            "alert": (
+                {
+                    "heading": dialog.get_heading(),
+                    "buttons": {r: centre(b) for r, b in alert_buttons(dialog).items()},
+                }
+                if isinstance(dialog, Adw.AlertDialog)
+                else None
+            ),
         }
 
     def test_state(self) -> dict:

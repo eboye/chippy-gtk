@@ -19,7 +19,13 @@ from chippy.core.mapedit import (  # noqa: E402
     Rect,
 )
 from chippy.core.profiles import R2209  # noqa: E402
-from chippy.ui.editpanel import NOT_SUPPORTED, SETTINGS_UNKNOWN, EditPanel  # noqa: E402
+from chippy.ui.editpanel import (  # noqa: E402
+    NOT_SUPPORTED,
+    SETTINGS_UNKNOWN,
+    EditPanel,
+    alert_buttons,
+    confirm,
+)
 
 
 def _session(settings_known=True) -> EditSession:
@@ -102,6 +108,12 @@ def test_discard_changes_restores_the_original():
     panel.cancel()
     assert panel.alert is not None
     assert panel.alert.get_heading() == "Discard changes?"
+    # Return (default) and Escape (close) keep editing: discarding takes a click
+    assert panel.alert.get_default_response() == "keep"
+    assert panel.alert.get_close_response() == "keep"
+    buttons = alert_buttons(panel.alert)
+    assert set(buttons) == {"keep", "discard"}
+    assert buttons["discard"].get_label() == "Discard"
     panel.alert.emit("response", "keep")  # Keep editing: nothing changes
     assert panel.dirty and "leave" not in events
     panel.cancel()
@@ -176,15 +188,40 @@ def test_unsupported_kinds_disable_their_controls_and_revert_them():
     assert panel.name_row.get_text() == "Living room"
 
 
-def test_new_session_keeps_the_zone_edits():
+def test_zones_are_read_only_when_the_robot_refused_them():
+    panel, events = _panel()
+    panel.edited.unsupported.add("zones")
+    panel.apply_unsupported()
+    panel.set_zone(("wall", 0))
+    assert not panel.zone_delete.get_sensitive()
+    panel.set_zones(MapZones())  # e.g. a map view edit: ignored, the map is told to redraw
+    panel.delete_zone()
+    assert panel.edited.zones == panel.original.zones
+    assert not panel.dirty
+    assert "changed" in events
+
+
+def test_merge_confirmation_accepts_with_return():
+    window = Adw.Window()
+    accepted = []
+    dialog = confirm(
+        window, "Merge A and B?", "body", ("merge", "Merge"), lambda: accepted.append(1)
+    )
+    assert dialog.get_default_response() == "merge"
+    assert dialog.get_close_response() == "cancel"
+    assert set(alert_buttons(dialog)) == {"cancel", "merge"}
+    dialog.emit("response", "merge")
+    assert accepted == [1]
+
+
+def test_cancel_is_insensitive_while_loading():
     panel, _ = _panel()
-    zones = MapZones(no_mop=(Rect(0, 0, 500, 500),))
-    panel.set_zones(zones)
-    fresh = _session()
-    panel.set_session(fresh, fresh.copy(), R2209, keep_zones=panel.edited.zones)
-    assert panel.edited.zones == zones
-    assert panel.original.zones == fresh.zones
-    assert panel.dirty
+    assert panel.cancel_button.get_sensitive()
+    panel.begin()
+    assert not panel.cancel_button.get_sensitive()
+    original = _session()
+    panel.set_session(original, original.copy(), R2209)
+    assert panel.cancel_button.get_sensitive()
 
 
 class _SidebarController:

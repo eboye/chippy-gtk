@@ -9,6 +9,7 @@ from chippy.core.mapedit import (
     MapZones,
     Rect,
     RoomSetting,
+    carry_edits,
     merge_payload,
     parse_cleanset,
     remap_after_merge,
@@ -70,6 +71,44 @@ def _session(**kw):
     )
     base.update(kw)
     return EditSession(**base)
+
+
+def test_carry_edits_onto_a_fresh_session_after_a_merge_or_split():
+    before = _session(
+        names={1: "Kitchen", 2: "Bath", 3: "Hall"},
+        settings={s: DEFAULT_SETTING for s in (1, 2, 3)},
+        order=[1, 2, 3],
+    )
+    edited = before.copy()
+    edited.zones = MapZones(no_go=(Rect(0, 0, 500, 500),))
+    edited.names[1] = "Cook room"
+    edited.names[3] = "Corridor"  # room 3 goes away
+    edited.settings[2] = RoomSetting("turbo", "high", 3)
+    edited.order = [3, 2, 1]
+    edited.use_room_settings = True
+    edited.unsupported.add("names")
+    # the robot merged 3 into 2 and split 1 (new room 4)
+    fresh = _session(
+        names={1: "Kitchen", 2: "Bath", 4: "Kitchen 2"},
+        settings={1: DEFAULT_SETTING, 2: DEFAULT_SETTING, 4: RoomSetting("quiet", "low", 1)},
+        order=[1, 2, 4],
+    )
+    carried = carry_edits(before, edited, fresh)
+    assert carried is not fresh and fresh.names[1] == "Kitchen"  # the original stays as is
+    assert carried.zones == edited.zones
+    assert carried.names == {1: "Cook room", 2: "Bath", 4: "Kitchen 2"}
+    assert carried.settings[2] == RoomSetting("turbo", "high", 3)
+    assert carried.settings[4] == RoomSetting("quiet", "low", 1)
+    assert carried.order == [2, 1, 4]  # survivors in the edited order, new rooms after
+    assert carried.use_room_settings is True
+    assert carried.unsupported == {"names"}
+
+
+def test_carry_edits_keeps_the_fresh_values_where_nothing_was_edited():
+    before = _session()
+    fresh = _session(names={1: "Kitchen", 2: "Bathroom"}, order=[2, 1])
+    carried = carry_edits(before, before.copy(), fresh)
+    assert carried == fresh
 
 
 def test_no_changes_no_edits():

@@ -228,6 +228,28 @@ def test_select_click_move_resize_and_delete():
     assert events == []
 
 
+def test_read_only_zones_can_be_selected_but_not_changed():
+    zones = MapZones(no_go=(Rect(0, 1000, 1000, 1600),))
+    view, events = _edit_view("select", zones)
+    view.set_zones_editable(False)
+    _click(view, 500, 1300)
+    assert events == [("zone-selected", "no_go", 0)]
+    events.clear()
+    _drag(view, (500, 1300), (900, 1100))  # body: would move; pans instead
+    _drag(view, (1000, 1600), (2000, 1800))  # corner: would resize
+    assert view._on_key(None, Gdk.KEY_Delete, 0, 0) is False
+    assert events == [] and view.zones == zones
+    for tool in ("no_go", "no_mop", "wall"):
+        view.set_tool(tool)
+        _drag(view, (0, 1000), (800, 1800))
+    assert events == [] and view.zones == zones
+    view.set_zones_editable(True)
+    view.set_tool("select")
+    _click(view, 500, 1300)
+    _drag(view, (500, 1300), (900, 1100))
+    assert events[-1][0] == "zones-edited"
+
+
 def test_select_drag_selects_and_moves_a_wall_end():
     zones = MapZones(walls=(Line(0, 1000, 1000, 1000),))
     view, events = _edit_view("select", zones)

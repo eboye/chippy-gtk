@@ -184,6 +184,27 @@ class EditSession:
         return edits
 
 
+def carry_edits(before: EditSession, edited: EditSession, fresh: EditSession) -> EditSession:
+    """A copy of `fresh` (read after a merge or split) with the unsaved edits of `edited`
+    (staged against `before`) carried over: zones, and for rooms that still exist their
+    names and settings, the order (survivors as edited, new rooms after) and the switch."""
+    out = fresh.copy()
+    out.zones = edited.zones
+    for seg, name in edited.names.items():
+        if seg in out.names and name != before.names.get(seg):
+            out.names[seg] = name
+    for seg, setting in edited.settings.items():
+        if seg in out.settings and setting != before.settings.get(seg):
+            out.settings[seg] = setting
+    if edited.order != before.order:
+        kept = [seg for seg in edited.order if seg in out.order]
+        out.order = kept + [seg for seg in out.order if seg not in kept]
+    if edited.use_room_settings != before.use_room_settings:
+        out.use_room_settings = edited.use_room_settings
+    out.unsupported |= edited.unsupported
+    return out
+
+
 def merge_payload(map_id: int, a: int, b: int) -> dict:
     return {"msr": [a, b], "mapid": map_id}
 
