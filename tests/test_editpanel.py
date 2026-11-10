@@ -58,7 +58,10 @@ def test_settings_unknown_shows_the_info_label():
     panel, _ = _panel(settings_known=False)
     assert panel.info_label.get_visible()
     assert panel.info_label.get_label() == SETTINGS_UNKNOWN
-    assert SETTINGS_UNKNOWN == "Settings from the robot aren't known yet; saving sets them."
+    assert (
+        SETTINGS_UNKNOWN
+        == "Room settings from the robot couldn't be read, so they're locked and saving won't change them."
+    )
     panel, _ = _panel(settings_known=True)
     assert not panel.info_label.get_visible()
 

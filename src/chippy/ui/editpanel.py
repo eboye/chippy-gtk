@@ -13,7 +13,9 @@ from gi.repository import Adw, GObject, Gtk  # noqa: E402
 from ..core.mapedit import EditSession, MapZones, RoomSetting  # noqa: E402
 from .sidebar import SUCTION, WATER  # noqa: E402
 
-SETTINGS_UNKNOWN = "Settings from the robot aren't known yet; saving sets them."
+SETTINGS_UNKNOWN = (
+    "Room settings from the robot couldn't be read, so they're locked and saving won't change them."
+)
 NOT_SUPPORTED = "Not supported on this model"
 ZONES_UNKNOWN = "Zones on this map couldn't be read; editing them is off to protect them."
 ZONE_TITLES = {"no_go": "No-go zone", "no_mop": "No-mop zone", "wall": "Wall"}

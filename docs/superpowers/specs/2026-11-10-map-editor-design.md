@@ -34,7 +34,7 @@ unverified until the live check.
     `{"<seg>": [suction, water(1–3), passes, order, …]}` (e.g. `[1, 3, 1, 2, -1]`). Chippy reads
     the newest `cleanset` from the last 7 days of 6.1 history when edit mode opens; without one,
     every room shows the defaults (standard, medium, 1 pass, order = room id order) and the
-    panel says "Settings from the robot aren't known yet; saving sets them."
+    panel says "Room settings from the robot couldn't be read, so they're locked and saving won't change them."
 
 ## Design
 
