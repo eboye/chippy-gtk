@@ -298,11 +298,12 @@ class ChippyApp(Adw.Application):
             def fetch():
                 return cloud_map.fetch_payload(vacuum)
 
-            live_track = LiveTrack(
-                lambda start, end: cloud_map.property_history(
+            def live_history(start, end):
+                return cloud_map.property_history(
                     creds.did, LIVE_PROPERTY, start, end, HISTORY_LIMIT
                 )
-            )
+
+            live_track = LiveTrack(live_history)
 
             def fetch_live():
                 if cloud_map.expired:
@@ -310,12 +311,7 @@ class ChippyApp(Adw.Application):
                 return live_track.poll()
 
             def fetch_cleanset():
-                return latest_cleanset(
-                    lambda start, end: cloud_map.property_history(
-                        creds.did, LIVE_PROPERTY, start, end, HISTORY_LIMIT
-                    ),
-                    int(time.time()),
-                )
+                return latest_cleanset(live_history, int(time.time()))
 
             rooms = RoomStore()
         self.credentials, self.profile = creds, profile

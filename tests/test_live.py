@@ -85,9 +85,9 @@ def test_a_long_pause_between_polls_starts_over():
 def test_latest_cleanset_is_the_newest_frame_that_has_one():
     history = _History()
     history.rows += [
+        (300, _value(_frame((1, 1, 0)))),
         (100, _value(_frame((1, 1, 0), extra={"cleanset": {"1": [2, 1, 1]}}))),
         (200, _value(_frame((1, 1, 0), extra={"cleanset": {"1": [3, 2, 2]}}))),
-        (300, _value(_frame((1, 1, 0)))),
     ]
     assert latest_cleanset(history, 400) == {"1": [3, 2, 2]}
     assert history.calls == [(400 - 7 * 86400, 460)]
@@ -98,3 +98,12 @@ def test_latest_cleanset_is_none_without_rows_or_cleanset():
     assert latest_cleanset(history, 400) is None
     history.rows += [(100, _value(_frame((1, 1, 0)), "not a frame"))]
     assert latest_cleanset(history, 400) is None
+
+
+def test_latest_cleanset_skips_an_undecodable_newest_frame():
+    history = _History()
+    history.rows += [
+        (300, _value("not a frame")),
+        (100, _value(_frame((1, 1, 0), extra={"cleanset": {"1": [2, 1, 1]}}))),
+    ]
+    assert latest_cleanset(history, 400) == {"1": [2, 1, 1]}

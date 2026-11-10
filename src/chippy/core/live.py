@@ -26,14 +26,18 @@ CLEANSET_LOOKBACK_DAYS = 7
 History = Callable[[int, int], list[tuple[int, str]]]  # (start, end) -> [(time, value)]
 
 
-def frames_in(value: str) -> list[MapFrame]:
-    """The frames in one 6.1 value; undecodable ones are skipped."""
+def _items_in(value: str) -> list:
+    """The entries of one 6.1 value (a JSON list; anything else is taken as a single entry)."""
     try:
         items = json.loads(value)
     except (json.JSONDecodeError, RecursionError):
         items = [value]
-    if not isinstance(items, list):
-        items = [items]
+    return items if isinstance(items, list) else [items]
+
+
+def frames_in(value: str) -> list[MapFrame]:
+    """The frames in one 6.1 value; undecodable ones are skipped."""
+    items = _items_in(value)
     frames = []
     for item in items:
         if not isinstance(item, str):
@@ -52,17 +56,14 @@ def latest_cleanset(
     for _when, value in sorted(
         history(now - days * 86400, now + 60), key=lambda r: r[0], reverse=True
     ):
-        try:
-            items = json.loads(value)
-        except (json.JSONDecodeError, RecursionError):
-            items = [value]
-        if not isinstance(items, list):
-            items = [items]
-        for item in reversed(items):
-            if isinstance(item, str):
-                cleanset = frame_trailer(item).get("cleanset")
-                if cleanset is not None:
-                    return cleanset
+        for item in reversed(_items_in(value)):
+            if not isinstance(item, str):
+                continue
+            trailer = frame_trailer(item)
+            if not trailer:
+                log.debug("skipping a live frame without readable room data")
+            elif trailer.get("cleanset") is not None:
+                return trailer["cleanset"]
     return None
 
 
