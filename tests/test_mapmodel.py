@@ -2,11 +2,15 @@ import pytest
 
 from chippy.core.fake import FAKE_LAYOUT, build_fake_payload
 from chippy.core.mapdecode import decode_map
+from chippy.core.mapedit import Line, MapZones, Rect
 from chippy.mapmodel import (
     PALETTE,
+    MapGeometry,
     Viewport,
     build_rooms,
+    geometry_from_frame,
     grid_from_frame,
+    hit_zone,
     label_anchors,
     live_from_frame,
     room_areas,
@@ -70,6 +74,53 @@ def test_live_from_frame_matches_charger_transform():
     assert live.robot == pytest.approx(grid.charger)
     assert live.angle == pytest.approx(90)
     assert live.path[1][0] == pytest.approx(live.path[0][0] + 1)  # +200 mm = +1 cell right
+
+
+def test_geometry_matches_charger_transform_and_round_trips():
+    frame = decode_map(build_fake_payload())
+    geom = geometry_from_frame(frame)
+    assert geom == MapGeometry(frame.left, frame.top, frame.grid_mm, frame.height)
+    assert geom.to_cell(*frame.charger[:2]) == pytest.approx(grid_from_frame(frame).charger)
+    assert geom.to_cell(frame.left, frame.top) == pytest.approx((0, frame.height))
+    for x, y in ((0, 0), (1234, -567), (frame.left, frame.top), (-3999, 2001)):
+        assert geom.to_mm(*geom.to_cell(x, y)) == (x, y)
+    x, y = geom.to_mm(1.26, 3.74)
+    assert isinstance(x, int) and isinstance(y, int)
+
+
+# A 200 mm grid with the map origin at cell (0, 10): x mm = 200 cx, y mm = 200 (10 - cy).
+GEOM = MapGeometry(left=0, top=0, grid_mm=200, height=10)
+ZONES = MapZones(
+    no_go=(Rect(0, 0, 1000, 1000), Rect(600, 600, 1600, 1600)),
+    no_mop=(Rect(1000, 0, 2000, 400),),
+    walls=(Line(0, 1400, 1000, 1400),),
+)
+
+
+def test_hit_zone_bodies_corners_and_misses():
+    # no_go[0] spans cells x 0..5, y 5..10; its corner c0 (x1, y1) is cell (0, 10).
+    assert hit_zone(ZONES, GEOM, 0.05, 9.95, 0.3) == ("no_go", 0, "c0")
+    assert hit_zone(ZONES, GEOM, 5, 10, 0.3) == ("no_go", 0, "c1")  # (x2, y1)
+    assert hit_zone(ZONES, GEOM, 0, 5, 0.3) == ("no_go", 0, "c3")  # (x1, y2)
+    assert hit_zone(ZONES, GEOM, 1, 9, 0.3) == ("no_go", 0, "body")
+    assert hit_zone(ZONES, GEOM, 7, 9.5, 0.3) == ("no_mop", 0, "body")
+    assert hit_zone(ZONES, GEOM, 9, 1, 0.3) is None
+    assert hit_zone(MapZones(), GEOM, 1, 9, 0.3) is None
+
+
+def test_hit_zone_walls_ends_before_body():
+    # Wall from cell (0, 3) to (5, 3).
+    assert hit_zone(ZONES, GEOM, 0.1, 3.1, 0.3) == ("wall", 0, "end0")
+    assert hit_zone(ZONES, GEOM, 5, 3, 0.3) == ("wall", 0, "end1")
+    assert hit_zone(ZONES, GEOM, 2.5, 3.2, 0.3) == ("wall", 0, "body")
+    assert hit_zone(ZONES, GEOM, 2.5, 3.5, 0.3) is None
+
+
+def test_hit_zone_overlaps_topmost_wins_and_handles_beat_bodies():
+    # no_go[1] (cells x 3..8, y 2..7) overlaps no_go[0] at cells x 3..5, y 5..7.
+    assert hit_zone(ZONES, GEOM, 4, 6, 0.3) == ("no_go", 1, "body")
+    # no_go[0]'s c2 (x2, y2) at cell (5, 5) lies inside no_go[1]'s body: the handle wins.
+    assert hit_zone(ZONES, GEOM, 5, 5, 0.3) == ("no_go", 0, "c2")
 
 
 def test_live_from_frame_without_robot():

@@ -1,9 +1,11 @@
 """Pure map geometry: display grid, rooms, label anchors, zoom/pan, texture pixels."""
 
+import math
 from collections import deque
 from dataclasses import dataclass
 
 from .core.mapdecode import MapFrame
+from .core.mapedit import MapZones, Rect
 
 MIN_VISIBLE_AREA = 0.25
 PALETTE = [
@@ -134,6 +136,79 @@ def live_from_frame(live: MapFrame, saved: MapFrame, grid: MapGrid) -> LiveState
     robot = cell(live.robot[0], live.robot[1]) if live.robot else None
     angle = float(live.robot[2]) if live.robot else 0.0
     return LiveState(robot, angle, [cell(x, y) for x, y in live.path])
+
+
+@dataclass(frozen=True)
+class MapGeometry:
+    """Map mm (y up) <-> display cells (rows top first), the transform of `live_from_frame`."""
+
+    left: int
+    top: int
+    grid_mm: int
+    height: int
+
+    def to_cell(self, x_mm: float, y_mm: float) -> tuple[float, float]:
+        return (x_mm - self.left) / self.grid_mm, self.height - (y_mm - self.top) / self.grid_mm
+
+    def to_mm(self, cx: float, cy: float) -> tuple[int, int]:
+        return (
+            round(self.left + cx * self.grid_mm),
+            round(self.top + (self.height - cy) * self.grid_mm),
+        )
+
+
+def geometry_from_frame(frame: MapFrame) -> MapGeometry:
+    return MapGeometry(frame.left, frame.top, frame.grid_mm, frame.height)
+
+
+def rect_corners(rect: Rect) -> list[tuple[int, int]]:
+    """Corners c0..c3 in mm: (x1, y1), (x2, y1), (x2, y2), (x1, y2)."""
+    return [(rect.x1, rect.y1), (rect.x2, rect.y1), (rect.x2, rect.y2), (rect.x1, rect.y2)]
+
+
+def _segment_distance(px, py, ax, ay, bx, by) -> float:
+    dx, dy = bx - ax, by - ay
+    length2 = dx * dx + dy * dy
+    t = 0.0 if length2 == 0 else max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / length2))
+    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+
+
+def hit_zone(
+    zones: MapZones, geom: MapGeometry, cx: float, cy: float, tolerance_cells: float
+) -> tuple[str, int, str] | None:
+    """The zone part under display cell (cx, cy): (kind, index, part).
+
+    Drawn bottom to top as no-mop, no-go, walls, each in list order, so the topmost is the
+    last wall, then the last no-go, ... Handles (rect corners, wall ends) of any zone beat
+    every body."""
+    stack = [("wall", i, w) for i, w in reversed(list(enumerate(zones.walls)))]
+    stack += [("no_go", i, r) for i, r in reversed(list(enumerate(zones.no_go)))]
+    stack += [("no_mop", i, r) for i, r in reversed(list(enumerate(zones.no_mop)))]
+
+    def near(point) -> bool:
+        x, y = geom.to_cell(*point)
+        return abs(x - cx) <= tolerance_cells and abs(y - cy) <= tolerance_cells
+
+    for kind, index, shape in stack:
+        if kind == "wall":
+            ends = [(shape.x1, shape.y1), (shape.x2, shape.y2)]
+            for n, end in enumerate(ends):
+                if near(end):
+                    return kind, index, f"end{n}"
+        else:
+            for n, corner in enumerate(rect_corners(shape)):
+                if near(corner):
+                    return kind, index, f"c{n}"
+    for kind, index, shape in stack:
+        if kind == "wall":
+            a, b = geom.to_cell(shape.x1, shape.y1), geom.to_cell(shape.x2, shape.y2)
+            if _segment_distance(cx, cy, *a, *b) <= tolerance_cells:
+                return kind, index, "body"
+        else:
+            (x1, y1), (x2, y2) = geom.to_cell(shape.x1, shape.y1), geom.to_cell(shape.x2, shape.y2)
+            if min(x1, x2) <= cx <= max(x1, x2) and min(y1, y2) <= cy <= max(y1, y2):
+                return kind, index, "body"
+    return None
 
 
 @dataclass(frozen=True)
