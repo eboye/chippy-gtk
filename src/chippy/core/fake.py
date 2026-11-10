@@ -7,7 +7,7 @@ import os
 import struct
 import time
 import zlib
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 
 from micloud.micloudexception import MiCloudAccessDenied
 
@@ -19,6 +19,7 @@ from .cloud import (
     TwoFactorRequired,
 )
 from .device import DeviceError
+from .mapedit import MapZones
 from .profiles import R2209
 from .state import Snapshot, name_to_value
 
@@ -59,14 +60,77 @@ def _cell_mm(col: float, row: float) -> tuple[int, int]:
     return (round(_LEFT + col * _GRID_MM), round(_TOP + (len(FAKE_LAYOUT) - row) * _GRID_MM))
 
 
+def _default_cleanset(layout: list[str]) -> dict[str, list[int]]:
+    ids = sorted({int(ch) for row in layout for ch in row if ch.isdigit()})
+    return {str(seg): [1, 2, 1, order, -1] for order, seg in enumerate(ids, 1)}
+
+
+@dataclass
+class FakeMap:
+    """The fake robot's mutable map: edits made through FakeVacuum show up in every payload
+    built from the same instance."""
+
+    layout: list[str] = field(default_factory=lambda: list(FAKE_LAYOUT))
+    names: dict[int, str] = field(default_factory=lambda: dict(FAKE_NAMES))
+    zones: MapZones = field(default_factory=MapZones)
+    cleanset: dict[str, list[int]] = field(default_factory=dict)
+    room_settings: bool = False
+
+    def __post_init__(self):
+        if not self.cleanset:
+            self.cleanset = _default_cleanset(self.layout)
+
+    def ids(self) -> set[int]:
+        return {int(ch) for row in self.layout for ch in row if ch.isdigit()}
+
+    def merge(self, a: int, b: int) -> None:
+        if a == b or not {a, b} <= self.ids():
+            raise DeviceError("cannot merge those rooms")
+        self.layout = [row.replace(str(b), str(a)) for row in self.layout]
+        self.names.pop(b, None)
+        self.cleanset.pop(str(b), None)
+
+    def split(self, seg: int, line: tuple[int, int, int, int]) -> None:
+        if seg not in self.ids():
+            raise DeviceError("no such room")
+        new = max(self.ids()) + 1
+        if new > 9:  # the layout is one character per cell
+            raise DeviceError("the fake map has no free room id")
+        x1, y1, x2, y2 = line
+        rows, moved, kept = [], 0, 0
+        for r, row in enumerate(self.layout):
+            chars = list(row)
+            for c, ch in enumerate(chars):
+                if ch != str(seg):
+                    continue
+                cx, cy = _cell_mm(c + 0.5, r + 0.5)
+                if (x2 - x1) * (cy - y1) - (y2 - y1) * (cx - x1) > 0:
+                    chars[c] = str(new)
+                    moved += 1
+                else:
+                    kept += 1
+            rows.append("".join(chars))
+        if not moved or not kept:
+            raise DeviceError("split line does not cross the room")
+        self.layout = rows
+        orders = [v[3] for v in self.cleanset.values()]
+        self.cleanset[str(new)] = [1, 2, 1, max(orders, default=0) + 1, -1]
+
+
 def build_fake_payload(
-    robot: tuple[int, int, int] | None = None, path: list[tuple[int, int]] | None = None
+    robot: tuple[int, int, int] | None = None,
+    path: list[tuple[int, int]] | None = None,
+    fake_map: FakeMap | None = None,
+    cleanset: dict[str, list[int]] | None = None,
 ) -> bytes:
     """The fake flat as the r2209's saved-maps document; optionally with a robot position
-    (x mm, y mm, angle) in header fields 3-5 and a cleaning path in the trailer's `tr`."""
-    width, height = len(FAKE_LAYOUT[0]), len(FAKE_LAYOUT)
+    (x mm, y mm, angle) in header fields 3-5, a cleaning path in the trailer's `tr` and the
+    per-room `cleanset` (live frames carry it)."""
+    fake_map = fake_map or FakeMap()
+    layout = fake_map.layout
+    width, height = len(layout[0]), len(layout)
     cells = []
-    for row in reversed(FAKE_LAYOUT):  # stored bottom row first
+    for row in reversed(layout):  # stored bottom row first
         for col, ch in enumerate(row):
             seg = int(ch) if ch.isdigit() else 0
             edge = seg and (col + 1 >= width or row[col + 1] != ch)
@@ -91,11 +155,14 @@ def build_fake_payload(
         left,
         top,
     )
-    seg_inf = {
-        str(k): {"name": base64.b64encode(v.encode()).decode()} for k, v in FAKE_NAMES.items()
+    seg_inf: dict = {
+        str(k): {"name": base64.b64encode(v.encode()).decode()} for k, v in fake_map.names.items()
     }
-    seg_inf["5"] = {}
-    trailer: dict = {"seg_inf": seg_inf}
+    for seg in sorted(fake_map.ids()):
+        seg_inf.setdefault(str(seg), {})
+    trailer: dict = {"seg_inf": seg_inf, **fake_map.zones.payload()}
+    if cleanset is not None:
+        trailer["cleanset"] = cleanset
     if path:
         steps = zip(path, path[1:], strict=False)
         trailer["tr"] = "S{},{}".format(*path[0]) + "".join(
@@ -136,19 +203,27 @@ def _live_loop() -> list[tuple[int, int]]:
 _LIVE_LOOP = _live_loop()
 
 
-def fake_live_payload(step: int) -> bytes:
+def fake_live_payload(step: int, fake_map: FakeMap | None = None) -> bytes:
     """A live frame: the robot at waypoint `step % 24` of its loop round the living room,
     facing along the last segment; the path is the waypoints visited so far this lap."""
     index = step % len(_LIVE_LOOP)
     x, y = _LIVE_LOOP[index]
     px, py = _LIVE_LOOP[index - 1]  # index 0 comes from the end of the previous lap
     angle = round(math.degrees(math.atan2(y - py, x - px))) % 360
-    return build_fake_payload(robot=(x, y, angle), path=_LIVE_LOOP[: index + 1])
+    fake_map = fake_map or FakeMap()
+    return build_fake_payload(
+        robot=(x, y, angle),
+        path=_LIVE_LOOP[: index + 1],
+        fake_map=fake_map,
+        cleanset=fake_map.cleanset,
+    )
 
 
 class FakeVacuum:
-    def __init__(self, profile=R2209, fault: int = 0):
+    def __init__(self, profile=R2209, fault: int = 0, fake_map: FakeMap | None = None):
         self._profile = profile
+        self.fake_map = fake_map or FakeMap()
+        self.edits: list[dict] = []  # every map-update payload received
         self._snap = Snapshot(
             state="docked",
             battery=100,
@@ -162,7 +237,7 @@ class FakeVacuum:
         self.live_step = 0  # where the fake robot is on its loop; advances each cleaning poll
 
     def poll(self) -> Snapshot:
-        snap = self._snap
+        snap = replace(self._snap, room_settings=self.fake_map.room_settings)
         if snap.state == "cleaning":
             self.live_step += 1
             snap = replace(
@@ -210,6 +285,33 @@ class FakeVacuum:
         if not ids:
             raise DeviceError("no rooms selected")
         self.start()
+
+    def update_map(self, payload: dict) -> None:
+        fm = self.fake_map
+        keys = set(payload) - {"mapid"}
+        if not keys <= {"vw", "nsr", "customeClean", "cleanOrder", "msr", "dsrid"}:
+            raise DeviceError("unsupported")
+        self.edits.append(payload)
+        if "vw" in payload:
+            fm.zones = MapZones.parse(payload["vw"])
+        for key, item in (payload.get("nsr") or {}).items():
+            fm.names[int(key)] = base64.b64decode(item["name"]).decode("utf-8")
+        for seg, suction, water, passes, *_ in payload.get("customeClean") or []:
+            old = fm.cleanset.get(str(seg))
+            order = old[3] if old else len(fm.cleanset) + 1
+            fm.cleanset[str(seg)] = [suction, water, passes, order, -1]
+        for order, seg in enumerate(payload.get("cleanOrder") or [], 1):
+            if str(seg) in fm.cleanset:
+                fm.cleanset[str(seg)][3] = order
+        if "msr" in payload:
+            a, b = payload["msr"]
+            fm.merge(a, b)
+        if "dsrid" in payload:
+            *line, seg = payload["dsrid"]
+            fm.split(seg, tuple(line))
+
+    def set_room_settings_enabled(self, on: bool) -> None:
+        self.fake_map.room_settings = bool(on)
 
     def request_map_object(self) -> str:
         return "fake-map"

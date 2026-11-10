@@ -1,5 +1,6 @@
 """Application: lifecycle, keyring, controller, D-Bus export, notifications."""
 
+import functools
 import json
 import logging
 import os
@@ -19,7 +20,13 @@ from .controller import ThreadRunner, VacuumController  # noqa: E402
 from .core import credentials  # noqa: E402
 from .core.cloud import CloudMap, CloudSessionExpired, XiaomiCloud  # noqa: E402
 from .core.device import Vacuum  # noqa: E402
-from .core.fake import FakeCloud, FakeVacuum, build_fake_payload, fake_live_payload  # noqa: E402
+from .core.fake import (  # noqa: E402
+    FakeCloud,
+    FakeMap,
+    FakeVacuum,
+    build_fake_payload,
+    fake_live_payload,
+)
 from .core.live import HISTORY_LIMIT, LIVE_PROPERTY, LiveTrack  # noqa: E402
 from .core.profiles import UnsupportedModel, profile_for  # noqa: E402
 from .dbus_service import VacuumDBus  # noqa: E402
@@ -264,8 +271,11 @@ class ChippyApp(Adw.Application):
             self.controller = None
         if self.fake:
             fake_fault = os.environ.get("CHIPPY_FAKE_FAULT", "")  # testing: a reported fault
-            vacuum = FakeVacuum(profile, int(fake_fault) if fake_fault.isdigit() else 0)
-            fetch = build_fake_payload
+            fake_map = FakeMap()  # one map shared by the robot, the map fetch and live frames
+            vacuum = FakeVacuum(
+                profile, int(fake_fault) if fake_fault.isdigit() else 0, fake_map=fake_map
+            )
+            fetch = functools.partial(build_fake_payload, fake_map=fake_map)
             if os.environ.get("CHIPPY_FAKE_CLOUD_EXPIRED") == "1":  # testing: a refused session
 
                 def fetch():
@@ -274,7 +284,7 @@ class ChippyApp(Adw.Application):
             def fetch_live():
                 if not vacuum.request_live_map_object():
                     return None
-                return fake_live_payload(vacuum.live_step)
+                return fake_live_payload(vacuum.live_step, fake_map)
 
             rooms = RoomStore(legacy=Path(self._fake_root or "/nonexistent") / "no-legacy.json")
         else:
