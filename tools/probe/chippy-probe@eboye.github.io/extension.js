@@ -199,6 +199,8 @@ export default class ChippyProbe extends Extension {
         }
         if (scenario === 'signin')
             return this._signin(opened);
+        if (scenario === 'qr')
+            return this._qr(opened);
         return this._mainScenario(opened);
     }
 
@@ -301,6 +303,34 @@ export default class ChippyProbe extends Extension {
                 JSON.stringify(this._state()));
             await this._shot('narrow');
         }
+    }
+
+    async _qr(opened) {
+        this._check('signin-page-shown',
+            Boolean(opened) && await this._waitFor(() => this._state().page === 'signed-out', 10000),
+            JSON.stringify(this._state()));
+        // The virtual keyboard drops its very first keyval (see _signin): warm it up.
+        await this._key(Clutter.KEY_Shift_L);
+        await this._sleep(500);
+        await this._clickApp(this._state().buttons.sign_in);
+        await this._waitFor(() => this._state().dialog === 'account', 5000);
+        await this._sleep(500);
+        await this._shot('qr-account');
+        const qrButton = this._state().dialog_buttons?.qr;
+        this._check('qr-button-shown', Boolean(qrButton), JSON.stringify(this._state().dialog_buttons));
+        if (!qrButton)
+            return;
+        await this._clickApp(qrButton);
+        this._check('qr-page', await this._waitFor(() => this._state().dialog === 'qr', 8000),
+            `dialog=${this._state().dialog}`);
+        await this._shot('qr-code');
+        this._check('qr-approved-devices',
+            await this._waitFor(() => this._state().dialog === 'devices', 15000),
+            `dialog=${this._state().dialog}`);
+        await this._key(Clutter.KEY_Return);
+        this._check('qr-signed-in', await this._waitFor(() => this._state().page === 'main', 10000),
+            JSON.stringify(this._state()));
+        await this._shot('qr-done');
     }
 
     async _signin(opened) {

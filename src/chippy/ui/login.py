@@ -9,7 +9,8 @@ from micloud.micloudexception import MiCloudAccessDenied
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, GLib, GObject, Gtk  # noqa: E402
+gi.require_version("Graphene", "1.0")
+from gi.repository import Adw, Gdk, GLib, GObject, Graphene, Gtk  # noqa: E402
 
 from ..core.accounts import credentials_for, discover_vacuums  # noqa: E402
 from ..core.cloud import (  # noqa: E402
@@ -225,9 +226,10 @@ class LoginDialog(Adw.Dialog):
         self.account_error = Gtk.Label(css_classes=["error"], wrap=True, visible=False)
         self.account_button = Gtk.Button(label="Sign In", css_classes=["pill", "suggested-action"])
         self.account_button.connect("clicked", lambda *_a: self._submit_account())
-        hint = Gtk.Label(
-            label="Signed in to Mi Home with Google? Set a Xiaomi password in "
-            "your account settings first.",
+        self.qr_button = Gtk.Button(label="Sign in with the Xiaomi Home app", css_classes=["pill"])
+        self.qr_button.connect("clicked", lambda *_a: self._start_qr())
+        qr_hint = Gtk.Label(
+            label="For accounts that use Google, Facebook or Apple",
             wrap=True,
             css_classes=["caption", "dim-label"],
         )
@@ -237,12 +239,51 @@ class LoginDialog(Adw.Dialog):
                 "Sign In",
                 [
                     self._group(self.email, self.password),
-                    hint,
                     self.account_error,
                     self.account_button,
+                    self.qr_button,
+                    qr_hint,
                 ],
             )
         )
+
+        self.qr_picture = Gtk.Picture(
+            width_request=220,
+            height_request=220,
+            can_shrink=True,
+            halign=Gtk.Align.CENTER,
+            css_classes=["qr-code"],
+        )
+        qr_steps = Gtk.Label(
+            label="1. Open Xiaomi Home on your phone\n2. Tap the scan button\n"
+            "3. Scan this code and confirm",
+            wrap=True,
+            xalign=0,
+        )
+        self.qr_status = Gtk.Box(spacing=8, halign=Gtk.Align.CENTER)
+        self.qr_status.append(Adw.Spinner())
+        self.qr_status.append(Gtk.Label(label="Waiting for approval…", css_classes=["dim-label"]))
+        self.qr_error = Gtk.Label(css_classes=["error"], wrap=True, visible=False)
+        self.qr_again = Gtk.Button(
+            label="Show a new code", css_classes=["pill", "suggested-action"], visible=False
+        )
+        self.qr_again.connect("clicked", lambda *_a: self._start_qr())
+        self.qr_browser = Gtk.Button(label="Open in browser instead", css_classes=["flat"])
+        self.qr_browser.connect("clicked", lambda *_a: self._open_qr_url())
+        self._qr_url = ""
+        self.qr_page = self._page(
+            "qr",
+            "Scan with Xiaomi Home",
+            [
+                self.qr_picture,
+                qr_steps,
+                self.qr_status,
+                self.qr_error,
+                self.qr_again,
+                self.qr_browser,
+            ],
+        )
+        self.qr_page.connect("hidden", lambda *_a: self._qr_left())
         # The email row has the keyboard focus as soon as the dialog shows.
         self.connect("map", lambda *_a: GLib.idle_add(self._focus, self.email))
 
@@ -319,6 +360,41 @@ class LoginDialog(Adw.Dialog):
 
     def _on_closed(self, _dialog) -> None:
         self._closed = True
+        self._flow.cancel_qr()
+
+    def _start_qr(self) -> None:
+        on_qr_page = self.nav.get_visible_page() is self.qr_page
+        if self._flow.busy and not on_qr_page:
+            return  # a password sign-in is in flight
+        self.account_error.set_visible(False)
+        self.qr_error.set_visible(False)
+        self.qr_again.set_visible(False)
+        self.qr_button.set_sensitive(False)
+        self._flow.sign_in_qr()
+
+    def _qr_left(self) -> None:
+        # Back from the QR page stops the wait; moving on to the vacuum list does not.
+        if self.nav.get_visible_page() is not self.devices_page:
+            self._flow.cancel_qr()
+        self.qr_button.set_sensitive(True)
+
+    def _open_qr_url(self) -> None:
+        if self._qr_url:
+            Gtk.UriLauncher.new(self._qr_url).launch(self.get_root(), None, None, None)
+
+    def test_buttons(self) -> dict:
+        """Centres of the dialog's buttons in window coordinates, for the nested check."""
+
+        def centre(widget):
+            root = self.get_root()
+            if root is None or not widget.get_mapped():
+                return None
+            ok, p = widget.compute_point(
+                root, Graphene.Point().init(widget.get_width() / 2, widget.get_height() / 2)
+            )
+            return [p.x, p.y] if ok else None
+
+        return {"qr": centre(self.qr_button)}
 
     def test_page(self) -> str:
         page = self.nav.get_visible_page()
@@ -328,6 +404,7 @@ class LoginDialog(Adw.Dialog):
         """Lock every input while a request runs (the flow also ignores extra submissions)."""
         self.account_button.set_sensitive(not busy)
         self.account_button.set_label("Signing In…" if busy else "Sign In")
+        self.qr_button.set_sensitive(not busy)
         focus = self.get_focus()
         if (
             busy
@@ -394,6 +471,21 @@ class LoginDialog(Adw.Dialog):
             self.captcha.set_text("")
             self._push(self.captcha_page, "captcha")
             GLib.idle_add(self._focus, self.captcha)
+        elif name == "qr":
+            try:
+                texture = Gdk.Texture.new_from_bytes(GLib.Bytes.new(data["image"]))
+            except GLib.Error:
+                self._flow.cancel_qr()
+                self._on_page(
+                    "error", {"page": "account", "message": "Couldn't show the QR code; try again."}
+                )
+                return
+            self._qr_url = data["url"]
+            self.qr_picture.set_paintable(texture)
+            self.qr_status.set_visible(True)
+            self.qr_error.set_visible(False)
+            self.qr_again.set_visible(False)
+            self._push(self.qr_page, "qr")
         elif name == "code":
             if data.get("resent"):
                 self.code.set_text("")
@@ -424,6 +516,18 @@ class LoginDialog(Adw.Dialog):
         elif name == "done":
             self.emit("signed-in", data["credentials"])
             self.close()
+        elif name == "error" and data["page"] == "qr":
+            if self.nav.get_visible_page() is not self.qr_page:
+                # The code never showed (Xiaomi or the network failed): report it where the
+                # button was pressed.
+                self.account_error.set_label(data["message"])
+                self.account_error.set_visible(True)
+                return
+            self.qr_status.set_visible(False)
+            self.qr_error.set_label(data["message"])
+            self.qr_error.set_visible(True)
+            self.qr_again.set_visible(True)
+            GLib.idle_add(self._focus, self.qr_again)
         elif name == "error":
             label = {
                 "account": self.account_error,

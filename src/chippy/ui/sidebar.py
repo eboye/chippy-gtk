@@ -54,7 +54,9 @@ def room_dot_css() -> str:
         f" background-color: color-mix(in srgb, var(--{name}-bg-color) 16%, transparent); }}\n"
         for severity, name in _NOTICE_COLORS.items()
     )
-    return dots + pills
+    # QR codes must be dark on light to scan, also in the dark theme
+    qr = ".qr-code { background-color: white; padding: 12px; border-radius: 12px; }\n"
+    return dots + pills + qr
 
 
 def notice_pill(severity: str, text: str) -> Gtk.Widget:

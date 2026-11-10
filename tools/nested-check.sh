@@ -4,7 +4,7 @@
 # headless GNOME Shell. The probe drives the app window and the top-bar
 # indicator with real (virtual) pointer and keyboard input and takes screenshots.
 #
-# Usage: tools/nested-check.sh [--scenario main|signin] [--scheme light|dark] [--timeout SECONDS]
+# Usage: tools/nested-check.sh [--scenario main|signin|qr] [--scheme light|dark] [--timeout SECONDS]
 # Output: ${CN_NEST_ROOT:-/tmp/chippy-nest}/out/{results.txt,*.png,shell.log,app.log,state.json}
 # Exit:   0 only if every required probe check passed and the logs have no extension
 #         errors, no app tracebacks and no app GLib criticals/warnings (a11y noise aside).
@@ -41,7 +41,8 @@ if [ "${1:-}" = "--inner" ]; then
     scheme_value=default
     [ "$CN_SCHEME" = dark ] && scheme_value=prefer-dark
     dconf write /org/gnome/desktop/interface/color-scheme "'$scheme_value'"
-    if [ "$CN_SCENARIO" = signin ]; then export CHIPPY_FAKE_SIGNED_OUT=1; fi
+    case "$CN_SCENARIO" in signin|qr) export CHIPPY_FAKE_SIGNED_OUT=1 ;; esac
+    if [ "$CN_SCENARIO" = qr ]; then export CHIPPY_FAKE_QR_DELAY=3; fi
     export CHIPPY_FAKE_HOME="$CN_NEST_ROOT_RESOLVED/fake-home"
     # On this private bus the fake keeps the real app id, so the extension finds it.
     export CHIPPY_FAKE_KEEP_APP_ID=1
@@ -56,7 +57,7 @@ if [ "${1:-}" = "--inner" ]; then
             # data dir, which the isolated XDG_DATA_HOME hides; it only gets the nest dir.
             export FLATPAK_USER_DIR="$CN_FLATPAK_USER_DIR"
             app_env=(--env=CHIPPY_FAKE_KEEP_APP_ID=1 "--env=CHIPPY_FAKE_HOME=$CHIPPY_FAKE_HOME")
-            for app_var in CHIPPY_FAKE_SIGNED_OUT CHIPPY_FAKE_FAULT; do
+            for app_var in CHIPPY_FAKE_SIGNED_OUT CHIPPY_FAKE_FAULT CHIPPY_FAKE_QR_DELAY; do
                 [ -n "${!app_var:-}" ] && app_env+=("--env=$app_var=${!app_var}")
             done
             exec flatpak run --user "${app_env[@]}" "--filesystem=$CN_NEST_ROOT_RESOLVED" \
@@ -80,7 +81,7 @@ while [ $# -gt 0 ]; do
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
-case "$scenario" in main|signin) ;; *) echo "--scenario must be main or signin: $scenario" >&2; exit 2 ;; esac
+case "$scenario" in main|signin|qr) ;; *) echo "--scenario must be main, signin or qr: $scenario" >&2; exit 2 ;; esac
 case "$scheme" in light|dark) ;; *) echo "--scheme must be light or dark: $scheme" >&2; exit 2 ;; esac
 export CN_SCENARIO="$scenario" CN_SCHEME="$scheme"
 
@@ -248,6 +249,14 @@ if [ "$scenario" = signin ]; then
         devices-page
         signed-in-main
         indicator-signed-in
+    )
+elif [ "$scenario" = qr ]; then
+    required_checks=(
+        signin-page-shown
+        qr-button-shown
+        qr-page
+        qr-approved-devices
+        qr-signed-in
     )
 else
     required_checks=(

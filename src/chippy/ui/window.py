@@ -315,6 +315,10 @@ class MainWindow(Adw.ApplicationWindow):
                 else None
             ),
             "dialog": getattr(dialog, "test_page", lambda: None)() if dialog else None,
+            "dialog_buttons": {
+                name: [p[0] + sx, p[1] + sy] if p else None
+                for name, p in (getattr(dialog, "test_buttons", dict)() if dialog else {}).items()
+            },
             "rooms": rooms,
             "checks": {str(k): centre(c) for k, c in self.sidebar.checks.items()},
             "buttons": {
