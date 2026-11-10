@@ -1,22 +1,64 @@
+<div align="center">
+
+<img src="data/icons/hicolor/scalable/apps/io.github.eboye.Chippy.svg" width="112" alt="Chippy icon">
+
 # Chippy
 
-Chippy is a GNOME app (GTK 4 and libadwaita) for Dreame robot vacuums. It shows the robot's
-map with its rooms, lets you pick rooms to clean, start, pause or stop a run and send the robot
-back to its dock, and it can keep watching in the background to notify you when a run finishes
-or the robot needs help. An optional GNOME Shell extension puts the robot's status and quick
-controls in the top bar.
+**Your Dreame robot vacuum, at home on the GNOME desktop.**
 
-![Chippy showing a map with four rooms (demo data)](docs/screenshot.png)
+A native GTK 4 and libadwaita app for the map, rooms, cleaning runs and map editing,<br>
+with an optional GNOME Shell extension for quick controls in the top bar.
 
-*The screenshot uses Chippy's built-in demo flat (`--fake`), not a real home.*
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-3584e4)](LICENSE)
+![GNOME 50 · 51](https://img.shields.io/badge/GNOME-50%20%C2%B7%2051-4a86cf?logo=gnome&logoColor=white)
+![GTK 4 + libadwaita](https://img.shields.io/badge/GTK%204-libadwaita-62a0ea)
+![Python 3.13+](https://img.shields.io/badge/python-3.13%2B-3776ab?logo=python&logoColor=white)
+![Flatpak](https://img.shields.io/badge/package-Flatpak-4a90d9?logo=flatpak&logoColor=white)
+
+[Features](#features) · [Install](#install) · [Signing in](#signing-in) · [Map editing](#map-editing) · [Privacy](#privacy) · [Development](#development)
+
+<br>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/cleaning-dark.png">
+  <img src="docs/screenshots/cleaning-light.png" width="860" alt="Chippy cleaning the kitchen, with the robot's live position and route on the map">
+</picture>
+
+<sub>Screenshots use Chippy's built-in demo flat (<code>--fake</code>), not a real home.</sub>
+
+</div>
+
+## Features
+
+| Feature | What it does |
+|---|---|
+| 🗺️ **Live map** | Rooms in colour with their areas, the dock, and the robot's position and route while it cleans. |
+| 🧹 **Room cleaning** | Pick rooms on the map or in the list, choose suction and mopping, then start, pause, stop, send the robot home or make it play a sound. |
+| ✏️ **Map editor** | No-go and no-mop zones, virtual walls, room names, per-room suction, mopping and passes, cleaning order, and room merge and split, all saved to the robot. |
+| 🔔 **Background alerts** | Keeps watching after you close the window and tells you when a run finishes or the robot needs help, with readable names for Dreame fault codes. |
+| 📌 **Top-bar controls** | An optional GNOME Shell extension shows status and battery and gives one-click start, pause, dock, locate and room cleaning. |
+| 🔐 **Private by design** | Sign-in details and the robot token live only in the GNOME Keyring, and commands go straight to the robot on your network. |
+
+<table>
+  <tr>
+    <td width="66%"><img src="docs/screenshots/editor.png" alt="Edit mode: a no-go zone, a virtual wall, numbered cleaning order and the settings of one room"></td>
+    <td width="34%"><img src="docs/screenshots/top-bar.png" alt="Chippy's top-bar menu in GNOME Shell"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Edit mode: zones, walls, cleaning order and per-room settings</sub></td>
+    <td align="center"><sub>Quick controls in the top bar</sub></td>
+  </tr>
+</table>
 
 ## Supported robots
 
-- **Dreame r2209 (Xiaomi Robot Vacuum X10)**: tested.
-- **Other Dreame vacuums**: experimental. Chippy marks them as untested in Preferences; status
-  and controls may work, but the map layout or some states may not.
-- **Encrypted maps** (used by some newer models) are not supported yet; Chippy says the map
-  can't be shown, but status and controls still work.
+| Robot | Status |
+|---|---|
+| **Dreame r2209** (Xiaomi Robot Vacuum X10) | ✅ Tested, including the map editor |
+| Other Dreame vacuums | 🧪 Experimental. Chippy marks them as untested in Preferences; status and controls may work, but the map layout or some states may not. |
+| Models with encrypted maps | ⏳ Not supported yet. Status and controls work, but the map can't be shown. |
+
+Robots that someone has shared with your Xiaomi account show up too.
 
 ## Install
 
@@ -30,6 +72,11 @@ flatpak-builder --user --install --force-clean build-dir flatpak/io.github.eboye
 flatpak run io.github.eboye.Chippy
 ```
 
+> [!TIP]
+> Chippy keeps running in the background after you close its window. After installing a new
+> build, run `flatpak kill io.github.eboye.Chippy` first; otherwise `flatpak run` just brings
+> back the old instance.
+
 ### From source
 
 Chippy uses the system's PyGObject, GTK 4 and libadwaita, so the virtual environment must see
@@ -41,67 +88,75 @@ uv sync
 tools/run-dev.sh            # add --fake to try it with a demo robot, no account needed
 ```
 
-## First run: signing in
+## Signing in
 
-Chippy talks to the robot over your local network, but it needs a token from your Xiaomi
-account (the one used by the Xiaomi Home / Mi Home app) to do so.
+Chippy needs your Xiaomi account (the one you use in the Xiaomi Home / Mi Home app) once, to
+find your robot and get its token. There are two ways in:
 
-- **Signed in to Xiaomi with Google?** Xiaomi's API needs a real Xiaomi password. Set one in
-  your Xiaomi account settings first, then sign in to Chippy with your email and that password.
-- **Captcha:** Xiaomi sometimes asks for one; Chippy shows the image and you type the
-  characters.
-- **Email code:** if Xiaomi wants to verify the sign-in, it emails you a code. Enter it in
-  Chippy (you can ask for a new code if it expires).
-- **Already using `dreamed`?** If you set up the `dreamed` command-line tool before, Chippy
-  picks up its saved sign-in from the keyring and signs you in automatically. Your custom room
-  names from `dreamed` are imported too.
+- **Email and password.** Xiaomi may ask for a captcha, which Chippy shows for you to type, or
+  email you a code to confirm the sign-in (you can ask for a new one if it expires).
+- **QR code, with the Xiaomi Home app.** Use this if your Xiaomi account uses Google, Facebook
+  or Apple sign-in. Scan the code with the app, approve, and you're in.
 
-After signing in, choose your vacuum if the account has more than one.
+If the account has more than one vacuum, pick yours from the list.
+
+<details>
+<summary>Coming from <code>dreamed</code>?</summary>
+
+If you used the older `dreamed` command-line helper, Chippy picks up its saved sign-in from the
+keyring and signs you in automatically. Its custom room names are imported too. The `dreamed`
+keyring item is only read, never changed or deleted.
+
+</details>
 
 ## Map editing
 
-The pencil button above the map switches to edit mode (it is not available while the robot is
-cleaning, returning, paused or offline). A toolbar appears with these tools:
+The pencil button above the map switches to edit mode. It isn't available while the robot is
+cleaning, returning, paused or offline. A toolbar appears with these tools:
 
-- **Select**: click a room to rename it or change its own suction, mopping and passes; click a
-  no-go, no-mop or wall to select it, drag it to move it, drag its handles to resize it (press
-  Delete or the bin button to remove it). Dragging empty map space pans the map.
-- **No-go zone** and **No-mop zone**: drag a rectangle.
-- **Wall**: drag a line for a virtual wall.
-- **Order**: click rooms in the order the robot should clean them.
-- **Split**: click a room, then drag a line across it.
-- **Merge**: click two neighbouring rooms.
+| Tool | What it does |
+|---|---|
+| **Select** | Click a room to rename it or set its own suction, mopping and passes. Click a zone or wall to move it, resize it or delete it. Drag empty space to pan. |
+| **No-go zone** / **No-mop zone** | Drag a rectangle. |
+| **Wall** | Drag a line for a virtual wall. |
+| **Order** | Click rooms in the order the robot should clean them. |
+| **Split** | Click a room, then drag a line across it. |
+| **Merge** | Click two neighbouring rooms. |
 
-Zones, walls, names, room settings and order are staged until you press **Save to robot**;
-**Cancel** throws them away (after asking, when there are changes). Merge and Split are
-different: after you confirm, they are applied to the robot straight away and can't be undone
-with Cancel.
+Zones, walls, names, room settings and order are staged until you press **Save to robot**.
+**Cancel** throws them away, after asking if there are changes.
 
-Editing changes the map stored on the robot, which is shared with the phone app, so the same
-rooms and zones show up there too. The **Use room settings** switch turns the robot's
-per-room cleaning settings on or off; while it is off, rooms are cleaned with the general
-settings.
+> [!IMPORTANT]
+> **Merge** and **Split** are applied to the robot as soon as you confirm them, and **Cancel**
+> can't undo them.
 
-## The top-bar switch
+Edits change the map stored on the robot, which the phone app shares, so the same rooms and
+zones show up there too. The **Use room settings** switch turns the robot's per-room settings
+on or off; while it's off, every room is cleaned with the general settings.
+
+## The top-bar extension
 
 **Preferences → General → Show in top bar** installs Chippy's GNOME Shell extension
-(`chippy@eboye.github.io`) into `~/.local/share/gnome-shell/extensions` and enables it. Turning
-the switch off disables and removes it again. The first time, GNOME Shell may only pick the
-extension up after you log out and back in; Chippy tells you when that's needed.
+(`chippy@eboye.github.io`, for GNOME 50 and 51) into `~/.local/share/gnome-shell/extensions`
+and enables it. Turning the switch off disables and removes it again. The first time, GNOME
+Shell may only pick the extension up after you log out and back in; Chippy tells you when
+that's needed.
 
+> [!WARNING]
 > **Turn "Show in top bar" off before you uninstall Chippy.** Uninstalling a Flatpak can't run
 > any cleanup code, so the extension would stay behind in your home folder. If that already
-> happened, remove it with
-> `gnome-extensions uninstall chippy@eboye.github.io`.
+> happened, remove it with `gnome-extensions uninstall chippy@eboye.github.io`.
 
 ## Privacy
 
-- The robot's token and your Xiaomi sign-in (email, password and session) are stored only in
-  the GNOME Keyring, as the item "Chippy robot vacuum", never in files. They are never logged.
-- An existing `dreamed` keyring item is only read and copied, never changed or deleted.
-- Room names you set are stored locally in Chippy's config folder and never uploaded.
-- Chippy contacts the Xiaomi cloud only to sign in and to download the map; robot status and
-  commands go directly to the robot on your network.
+- **Secrets stay in the keyring.** The robot's token and your Xiaomi sign-in (email, password
+  and session) are stored only in the GNOME Keyring, as the item "Chippy robot vacuum". They are
+  never written to files or logs.
+- **Commands stay local.** Status, controls and map edits go directly to the robot on your
+  network.
+- **The Xiaomi cloud is used only where it's needed:** signing in, finding your robots,
+  downloading the map, and following the robot's position and room settings, which the robot
+  only publishes there.
 
 ## Development
 
@@ -113,13 +168,26 @@ tools/run-dev.sh --fake                            # the app with a demo robot a
 tools/nested-check.sh --scenario main              # app + extension in an isolated headless GNOME Shell
 ```
 
-`--fake` runs Chippy against a simulated robot under a separate application id, with temporary
-config and cache folders and an in-memory keyring, so it never touches your real setup.
-`tools/nested-check.sh` starts a private, headless GNOME Shell with its own D-Bus session and
-dconf database, drives the app window and the top-bar indicator with real (virtual) pointer and
-keyboard input, and writes screenshots and results to `/tmp/chippy-nest/out`.
+- `--fake` runs Chippy against a simulated robot under a separate application id, with
+  temporary config and cache folders and an in-memory keyring, so it never touches your real
+  setup.
+- `tools/nested-check.sh` starts a private, headless GNOME Shell with its own D-Bus session and
+  dconf database. It drives the app window and the top-bar menu with real (virtual) pointer and
+  keyboard input, and writes screenshots and results to `/tmp/chippy-nest/out`. Scenarios:
+  `main`, `signin`, `qr` and `edit`.
 
-The desktop files and icons are in `data/`, the Flatpak manifest in `flatpak/`.
+<details>
+<summary>Project layout and Flatpak dependencies</summary>
+
+| Path | Contents |
+|---|---|
+| `src/chippy/` | The app: `core/` talks to the robot and the Xiaomi cloud, `ui/` holds the GTK interface |
+| `extension/` | The GNOME Shell extension |
+| `data/` | Desktop file, AppStream metadata, D-Bus service and icons |
+| `flatpak/` | The Flatpak manifest and generated Python dependencies |
+| `tests/` | The pytest suite |
+| `tools/` | Dev runner and the nested GNOME Shell check |
+
 `flatpak/python-deps.json` is generated with
 [flatpak-pip-generator](https://github.com/flatpak/flatpak-builder-tools/tree/master/pip):
 
@@ -128,6 +196,11 @@ flatpak-pip-generator.py --runtime org.gnome.Sdk//51 --prefer-wheels cryptograph
   python-miio==0.5.12 micloud==0.6 secretstorage requests hatchling -o flatpak/python-deps
 ```
 
+</details>
+
 ## License
 
-GPL-3.0-or-later. See [LICENSE](LICENSE).
+Chippy is free software, licensed under the [GPL-3.0-or-later](LICENSE).
+
+<sub>Chippy is an independent project and is not affiliated with, endorsed by or sponsored by
+Dreame or Xiaomi. Product names are trademarks of their respective owners.</sub>
