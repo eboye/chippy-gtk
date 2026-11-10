@@ -163,6 +163,40 @@ export default class ChippyProbe extends Extension {
         await this._clickAt(sx, sy, double ? 2 : 1);
     }
 
+    // A real drag: press at `from`, move to `to` in several small steps, release.
+    async _dragApp(from, to, steps = 12) {
+        const win = this._appWindow();
+        const [fx, fy] = this._toStage(win, from);
+        const [tx, ty] = this._toStage(win, to);
+        const seat = global.stage.context.get_backend().get_default_seat();
+        this._pointer ??= seat.create_virtual_device(Clutter.InputDeviceType.POINTER_DEVICE);
+        const move = (x, y) => this._pointer.notify_absolute_motion(GLib.get_monotonic_time(), x, y);
+        move(fx, fy);
+        await this._sleep(250);
+        move(fx, fy);
+        await this._sleep(300);
+        if (Main.overview.visible) {
+            Main.overview.hide();
+            await this._sleep(1000);
+            move(fx, fy);
+            await this._sleep(200);
+        }
+        this._pointer.notify_button(GLib.get_monotonic_time(), Clutter.BUTTON_PRIMARY,
+            Clutter.ButtonState.PRESSED);
+        try {
+            await this._sleep(120);
+            for (let i = 1; i <= steps; i++) {
+                move(fx + (tx - fx) * i / steps, fy + (ty - fy) * i / steps);
+                await this._sleep(40);
+            }
+            await this._sleep(120);
+        } finally {
+            this._pointer.notify_button(GLib.get_monotonic_time(), Clutter.BUTTON_PRIMARY,
+                Clutter.ButtonState.RELEASED);
+        }
+        await this._sleep(400);
+    }
+
     async _scrollApp(point, direction) {
         const win = this._appWindow();
         const [sx, sy] = this._toStage(win, point);
@@ -201,7 +235,146 @@ export default class ChippyProbe extends Extension {
             return this._signin(opened);
         if (scenario === 'qr')
             return this._qr(opened);
+        if (scenario === 'edit')
+            return this._edit(opened);
         return this._mainScenario(opened);
+    }
+
+    async _chooseTool(tool) {
+        await this._clickApp(this._state().edit.buttons[tool]);
+        await this._waitFor(() => this._state().edit.tool === tool, 3000);
+    }
+
+    // Draws a rectangle (or line) with the current tool and returns once the count of `kind` is `n`.
+    async _draw(tool, kind, from, to, n) {
+        await this._chooseTool(tool);
+        await this._dragApp(from, to);
+        return this._waitFor(() => this._state().edit.zones[kind] === n, 3000);
+    }
+
+    async _edit(opened) {
+        this._check('app-window-opens', Boolean(opened), JSON.stringify(this._state()));
+        if (!opened)
+            return;
+        await this._waitFor(() => Object.keys(this._state()?.rooms ?? {}).length >= 4, 10000);
+        // The virtual keyboard drops its very first keyval: warm it up.
+        await this._key(Clutter.KEY_Shift_L);
+        await this._sleep(500);
+
+        await this._clickApp(this._state().edit.buttons.edit);
+        this._check('edit-mode-on', await this._waitFor(() => this._state().edit.mode === true, 8000),
+            JSON.stringify(this._state().edit));
+        await this._waitFor(() => this._state().edit.buttons.no_go !== null, 3000);
+        await this._sleep(1000);
+
+        const [lx, ly] = this._state().rooms['1'];
+        const a = [lx - 70, ly - 50];
+        const b = [lx + 50, ly + 40];
+        const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+
+        // No-go zone, then Delete right after drawing
+        this._check('no-go-drawn', await this._draw('no_go', 'no_go', a, b, 1),
+            JSON.stringify(this._state().edit));
+        await this._key(Clutter.KEY_Delete);
+        this._check('delete-after-draw',
+            await this._waitFor(() => this._state().edit.zones.no_go === 0, 3000),
+            JSON.stringify(this._state().edit));
+        await this._draw('no_go', 'no_go', a, b, 1);
+
+        // Select tool: move the zone by its body, then resize by a corner
+        await this._chooseTool('select');
+        const edited = () => this._state().edit;
+        const rect = () => edited().no_go_rects[0];
+        const r0 = rect();
+        await this._dragApp(mid, [mid[0] + 40, mid[1]]);
+        const r1 = rect();
+        // moved: same size, shifted right
+        this._check('zone-moved', edited().zones.no_go === 1 && edited().dirty && r1[0] > r0[0] &&
+            r1[2] > r0[2] && r1[2] - r1[0] === r0[2] - r0[0] && r1[3] - r1[1] === r0[3] - r0[1],
+            `${JSON.stringify(r0)} -> ${JSON.stringify(r1)}`);
+        const b2 = [b[0] + 40, b[1]];
+        await this._dragApp(b2, [b2[0] + 30, b2[1] + 30]);
+        const r2 = rect();
+        // resized: dragging the on-screen bottom-right corner out (map y points up) grows x2
+        // and lowers y1; the opposite corner stays
+        this._check('zone-resized', edited().zones.no_go === 1 && r2[0] === r1[0] && r2[3] === r1[3] &&
+            r2[2] > r1[2] && r2[1] < r1[1], `${JSON.stringify(r1)} -> ${JSON.stringify(r2)}`);
+        await this._shot('edit-resized');
+        await this._clickApp([mid[0] + 40, mid[1]]);
+        await this._sleep(300);
+        await this._key(Clutter.KEY_Delete);
+        this._check('delete-after-click',
+            await this._waitFor(() => edited().zones.no_go === 0, 3000), JSON.stringify(edited()));
+        await this._draw('no_go', 'no_go', a, b, 1);
+
+        // Select tool on empty map: pans, no zone changes
+        await this._chooseTool('select');
+        const before = this._state().rooms['3'];
+        await this._dragApp(before, [before[0] + 60, before[1] + 40]);
+        const after = this._state().rooms['3'];
+        const moved = Boolean(after) &&
+            (Math.abs(after[0] - before[0]) > 20 || Math.abs(after[1] - before[1]) > 20);
+        this._check('select-drag-pans', moved && edited().zones.no_go === 1 &&
+            edited().zones.walls === 0,
+            `before=${JSON.stringify(before)} after=${JSON.stringify(after)} ${JSON.stringify(edited())}`);
+
+        // Wall (rooms[2] is a different spot than the zone)
+        const [kx, ky] = this._state().rooms['2'];
+        this._check('wall-drawn', await this._draw('wall', 'walls', [kx - 40, ky + 40], [kx + 50, ky + 60], 1),
+            JSON.stringify(edited()));
+        await this._sleep(500);
+        await this._shot('edit-drawn');
+
+        // Save
+        await this._clickApp(edited().buttons.save);
+        const left = await this._waitFor(() => edited().mode === false, 10000);
+        await this._sleep(2500);
+        this._check('saved-and-shown',
+            left && edited().zones.no_go === 1 && edited().zones.walls === 1,
+            JSON.stringify(edited()));
+        await this._shot('edit-saved');
+
+        // Merge Kitchen and Hallway
+        await this._clickApp(edited().buttons.edit);
+        await this._waitFor(() => edited().mode === true && edited().buttons.merge !== null, 8000);
+        await this._sleep(1000);
+        const roomCount = () => Object.keys(this._state().rooms).length;
+        const roomsBefore = roomCount();
+        await this._chooseTool('merge');
+        await this._clickApp(this._state().rooms['2']);
+        await this._clickApp(this._state().rooms['4']);
+        const asked = await this._waitFor(() => edited().alert?.heading?.startsWith('Merge'), 4000);
+        await this._sleep(500);
+        await this._shot('edit-merge-ask');
+        if (asked) {
+            await this._clickApp(edited().alert.buttons.merge);
+            await this._waitFor(() => roomCount() < roomsBefore, 10000);
+        }
+        this._check('merge-done', asked && roomCount() === roomsBefore - 1,
+            `asked=${asked} before=${roomsBefore} now=${roomCount()} ${JSON.stringify(edited())}`);
+        await this._sleep(1000);
+        await this._shot('edit-merged');
+
+        // Cancel with unsaved changes: Return keeps editing, Discard leaves
+        await this._waitFor(() => edited().mode === true && !edited().alert, 5000);
+        const [mx, my] = this._state().rooms['1'];
+        await this._draw('no_mop', 'no_mop', [mx - 70, my - 50], [mx + 50, my + 40], 1);
+        await this._clickApp(edited().buttons.cancel);
+        const discarding = await this._waitFor(
+            () => edited().alert?.heading === 'Discard changes?', 4000);
+        await this._sleep(400);
+        await this._shot('edit-discard-ask');
+        await this._key(Clutter.KEY_Return);
+        await this._sleep(600);
+        this._check('return-keeps-editing', discarding && edited().mode === true,
+            JSON.stringify(edited()));
+        if (edited().alert === null)
+            await this._clickApp(edited().buttons.cancel);
+        await this._waitFor(() => edited().alert?.buttons?.discard, 4000);
+        await this._clickApp(edited().alert.buttons.discard);
+        this._check('discard-leaves', await this._waitFor(() => edited().mode === false, 5000),
+            JSON.stringify(edited()));
+        await this._shot('edit-done');
     }
 
     async _mainScenario(opened) {

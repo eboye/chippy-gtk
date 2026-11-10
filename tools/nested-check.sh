@@ -4,7 +4,7 @@
 # headless GNOME Shell. The probe drives the app window and the top-bar
 # indicator with real (virtual) pointer and keyboard input and takes screenshots.
 #
-# Usage: tools/nested-check.sh [--scenario main|signin|qr] [--scheme light|dark] [--timeout SECONDS]
+# Usage: tools/nested-check.sh [--scenario main|signin|qr|edit] [--scheme light|dark] [--timeout SECONDS]
 # Output: ${CN_NEST_ROOT:-/tmp/chippy-nest}/out/{results.txt,*.png,shell.log,app.log,state.json}
 # Exit:   0 only if every required probe check passed and the logs have no extension
 #         errors, no app tracebacks and no app GLib criticals/warnings (a11y noise aside).
@@ -81,7 +81,7 @@ while [ $# -gt 0 ]; do
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
-case "$scenario" in main|signin|qr) ;; *) echo "--scenario must be main, signin or qr: $scenario" >&2; exit 2 ;; esac
+case "$scenario" in main|signin|qr|edit) ;; *) echo "--scenario must be main, signin, qr or edit: $scenario" >&2; exit 2 ;; esac
 case "$scheme" in light|dark) ;; *) echo "--scheme must be light or dark: $scheme" >&2; exit 2 ;; esac
 export CN_SCENARIO="$scenario" CN_SCHEME="$scheme"
 
@@ -249,6 +249,21 @@ if [ "$scenario" = signin ]; then
         devices-page
         signed-in-main
         indicator-signed-in
+    )
+elif [ "$scenario" = edit ]; then
+    required_checks=(
+        edit-mode-on
+        no-go-drawn
+        delete-after-draw
+        zone-moved
+        zone-resized
+        delete-after-click
+        select-drag-pans
+        wall-drawn
+        saved-and-shown
+        merge-done
+        return-keeps-editing
+        discard-leaves
     )
 elif [ "$scenario" = qr ]; then
     required_checks=(

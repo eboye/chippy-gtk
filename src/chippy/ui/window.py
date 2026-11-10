@@ -620,6 +620,7 @@ class MainWindow(Adw.ApplicationWindow):
         zones = self.map_view.zones
         buttons = {tool: centre(button) for tool, button in self.tool_buttons.items()}
         buttons["save"] = centre(self.edit_panel.save_button)
+        buttons["cancel"] = centre(self.edit_panel.cancel_button)
         buttons["edit"] = centre(self.edit_button)
         return {
             "mode": self.editing,
@@ -631,6 +632,7 @@ class MainWindow(Adw.ApplicationWindow):
                 "no_mop": len(zones.no_mop),
                 "walls": len(zones.walls),
             },
+            "no_go_rects": [r.as_list() for r in zones.no_go],
             # an open confirmation (Discard / Merge / Split) and its buttons by response id;
             # Return accepts Merge / Split but keeps editing on Discard
             "alert": (

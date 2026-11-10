@@ -58,6 +58,30 @@ account (the one used by the Xiaomi Home / Mi Home app) to do so.
 
 After signing in, choose your vacuum if the account has more than one.
 
+## Map editing
+
+The pencil button above the map switches to edit mode (it is not available while the robot is
+cleaning, returning, paused or offline). A toolbar appears with these tools:
+
+- **Select**: click a room to rename it or change its own suction, mopping and passes; click a
+  no-go, no-mop or wall to select it, drag it to move it, drag its handles to resize it (press
+  Delete or the bin button to remove it). Dragging empty map space pans the map.
+- **No-go zone** and **No-mop zone**: drag a rectangle.
+- **Wall**: drag a line for a virtual wall.
+- **Order**: click rooms in the order the robot should clean them.
+- **Split**: click a room, then drag a line across it.
+- **Merge**: click two neighbouring rooms.
+
+Zones, walls, names, room settings and order are staged until you press **Save to robot**;
+**Cancel** throws them away (after asking, when there are changes). Merge and Split are
+different: after you confirm, they are applied to the robot straight away and can't be undone
+with Cancel.
+
+Editing changes the map stored on the robot, which is shared with the phone app, so the same
+rooms and zones show up there too. The **Use room settings** switch turns the robot's
+per-room cleaning settings on or off; while it is off, rooms are cleaned with the general
+settings.
+
 ## The top-bar switch
 
 **Preferences → General → Show in top bar** installs Chippy's GNOME Shell extension
