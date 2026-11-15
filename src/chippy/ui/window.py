@@ -734,6 +734,8 @@ class MainWindow(Adw.ApplicationWindow):
             "scale": vp.scale if vp else 0,
             "fit_scale": vp.fit_scale() if vp else 0,
             "sidebar_collapsed": self.split.get_collapsed(),
+            "robot_state": self._ctl.snapshot.state if self._ctl else None,
+            "banner": self.banner.get_title() if self.banner.get_revealed() else None,
             "cloud_banner": (
                 [self.cloud_banner.get_title(), self.cloud_banner.get_action_name()]
                 if self.cloud_banner.get_revealed()

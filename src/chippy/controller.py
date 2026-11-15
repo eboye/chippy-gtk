@@ -39,6 +39,7 @@ from .mapmodel import (
 log = logging.getLogger(__name__)
 
 OFFLINE_AFTER = 3
+RELOCATE_EVERY = 5  # failed polls between searches for the robot at a new address
 OFFLINE_ERROR = "Can't reach the robot (Wi-Fi asleep, wrong IP, or the token changed)"
 ENCRYPTED_MAP = "This model's map can't be shown yet"
 _ACTIVE = {"cleaning", "returning"}
@@ -145,6 +146,8 @@ class VacuumController(GObject.Object):
         "cloud-expired": (GObject.SignalFlags.RUN_FIRST, None, ()),
         # every step of a map edit reached the robot
         "edit-saved": (GObject.SignalFlags.RUN_FIRST, None, ()),
+        # the robot answered at a new IP address, which Chippy now uses
+        "robot-moved": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
     }
 
     def __init__(
@@ -160,6 +163,7 @@ class VacuumController(GObject.Object):
         fetch_live_payload: Callable[[], MapFrame | bytes | None] | None = None,
         cloud_runner=None,
         fetch_cleanset: Callable[[], object | None] | None = None,
+        relocate: Callable[[], str | None] | None = None,
     ):
         super().__init__()
         self._vacuum, self.profile = vacuum, profile
@@ -198,6 +202,9 @@ class VacuumController(GObject.Object):
         self._live_running = False  # timer armed or a request in flight
         self._live_generation = 0  # bumped when the loop stops; older answers are dropped
         self._live_empty = 0
+        # finds the robot after its IP address changed; returns the new address or None
+        self._relocate = relocate
+        self._relocating = False
 
     # lifecycle -------------------------------------------------------------
     def start(self) -> None:
@@ -257,6 +264,7 @@ class VacuumController(GObject.Object):
                 log.error("poll failed unexpectedly (%d)", self.failures, exc_info=error)
             if self.failures < OFFLINE_AFTER:
                 self._schedule()
+                self._maybe_relocate()
                 return
             snap = replace(self.snapshot, state="offline", error=OFFLINE_ERROR)
         else:
@@ -273,6 +281,32 @@ class VacuumController(GObject.Object):
                 log.exception("notification handler failed")
         self._update_live()
         self._schedule()
+        if error is not None:
+            self._maybe_relocate()
+
+    def _maybe_relocate(self) -> None:
+        """After the first failed poll, and every few after it, look for the robot on the
+        local network: a router may have given it a new IP address."""
+        if self._relocate is None or self._relocating:
+            return
+        if self.failures != 1 and self.failures % RELOCATE_EVERY:
+            return
+        self._relocating = True
+        self._runner.run(self._relocate, self._on_relocated)
+
+    def _on_relocated(self, ip, error) -> None:
+        self._relocating = False
+        if self._stopped:
+            return
+        if error is not None:
+            log.warning("looking for the robot failed: %s", error)
+            return
+        if not ip:
+            return
+        log.info("the robot answered at %s; using that address now", ip)
+        self.emit("robot-moved", ip)
+        self.poke()
+        self.refresh_map()  # the map request goes through the robot too
 
     def _schedule(self) -> None:
         if not self._running:

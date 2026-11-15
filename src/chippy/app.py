@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import gi
@@ -18,7 +19,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk  # noqa: E402
 
 from . import APP_ID, VERSION, background  # noqa: E402
 from .controller import ThreadRunner, VacuumController  # noqa: E402
-from .core import credentials  # noqa: E402
+from .core import credentials, discovery  # noqa: E402
 from .core.cloud import CloudMap, CloudSessionExpired, XiaomiCloud  # noqa: E402
 from .core.device import Vacuum  # noqa: E402
 from .core.fake import (  # noqa: E402
@@ -281,6 +282,16 @@ class ChippyApp(Adw.Application):
             vacuum = FakeVacuum(
                 profile, int(fake_fault) if fake_fault.isdigit() else 0, fake_map=fake_map
             )
+            relocate = None
+            if os.environ.get("CHIPPY_FAKE_MOVED") == "1":  # testing: the robot got a new IP
+                vacuum.answers_at = "127.0.0.9"
+
+                def relocate():
+                    if vacuum.ip == vacuum.answers_at:
+                        return None
+                    vacuum.move_to(vacuum.answers_at)
+                    return vacuum.ip
+
             fetch = functools.partial(fake_saved_payload, fake_map)
             if os.environ.get("CHIPPY_FAKE_CLOUD_EXPIRED") == "1":  # testing: a refused session
 
@@ -298,6 +309,14 @@ class ChippyApp(Adw.Application):
             rooms = RoomStore(legacy=Path(self._fake_root or "/nonexistent") / "no-legacy.json")
         else:
             vacuum = Vacuum.connect(creds.ip, creds.token, profile)
+
+            def relocate():
+                ip = discovery.find_robot(creds.did)
+                if not ip or ip == vacuum.ip:
+                    return None
+                vacuum.move_to(ip)
+                return ip
+
             cloud_map = CloudMap(creds)
 
             def fetch():
@@ -328,11 +347,34 @@ class ChippyApp(Adw.Application):
             fetch,
             fetch_live_payload=fetch_live,
             fetch_cleanset=fetch_cleanset,
+            relocate=relocate,
         )
         self.controller.connect("notify-user", self._notify)
+        self.controller.connect("robot-moved", self._robot_moved)
         self._dbus.attach(self.controller)
         self._set_state("ready")
         self.controller.start()
+
+    def _robot_moved(self, controller, ip: str) -> None:
+        """The robot got a new IP address: remember it, so the next start uses it too."""
+        if controller is not self.controller or self.credentials is None:
+            return
+        self.credentials = replace(self.credentials, ip=ip)
+        did = self.credentials.did
+
+        def work():
+            keyring = self.keyring()
+            # Update the stored item rather than writing self.credentials back: only the
+            # address changed, and the item may hold a newer cloud session.
+            stored = credentials.load(keyring, import_legacy=False)
+            if stored is not None and stored.did == did and stored.ip != ip:
+                credentials.save(replace(stored, ip=ip), keyring)
+
+        def done(_r, error):
+            if error is not None:
+                log.error("couldn't save the robot's new address: %s", error)
+
+        self._keyring_runner.run(work, done)
 
     def sign_in_with(self, creds, on_done=None) -> None:
         """Save `creds` and start on them; `on_done(error)` runs once that has happened
@@ -442,6 +484,10 @@ class ChippyApp(Adw.Application):
         try:
             data = self.window.test_state() if self.window else {"page": None}
             data["app_state"] = self.state
+            data["robot_ip"] = self.credentials.ip if self.credentials else None
+            if self.fake:  # the in-memory keyring is cheap to read on the main loop
+                saved = credentials.load(self.keyring(), import_legacy=False)
+                data["saved_ip"] = saved.ip if saved else None
             tmp = f"{self._test_state_path}.tmp"
             with open(tmp, "w") as fh:
                 json.dump(data, fh)

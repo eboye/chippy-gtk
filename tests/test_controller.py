@@ -64,7 +64,14 @@ def parts(tmp_path):
     )
 
 
-def make(parts, vacuum=None, fetch=build_fake_payload, clock=lambda: 0.0, fetch_cleanset=None):
+def make(
+    parts,
+    vacuum=None,
+    fetch=build_fake_payload,
+    clock=lambda: 0.0,
+    fetch_cleanset=None,
+    relocate=None,
+):
     sched = ManualScheduler()
     ctl = VacuumController(
         vacuum or FakeVacuum(),
@@ -76,6 +83,7 @@ def make(parts, vacuum=None, fetch=build_fake_payload, clock=lambda: 0.0, fetch_
         scheduler=sched,
         clock=clock,
         fetch_cleanset=fetch_cleanset,
+        relocate=relocate,
     )
     events = []
     for sig in ("snapshot-changed", "rooms-changed", "map-changed"):
@@ -83,6 +91,7 @@ def make(parts, vacuum=None, fetch=build_fake_payload, clock=lambda: 0.0, fetch_
     for sig in ("action-failed", "map-failed"):
         ctl.connect(sig, lambda _c, msg, s=sig: events.append((s, msg)))
     ctl.connect("notify-user", lambda _c, t, b: events.append(("notify", t, b)))
+    ctl.connect("robot-moved", lambda _c, ip: events.append(("robot-moved", ip)))
     return ctl, sched, events
 
 
@@ -144,6 +153,66 @@ def test_offline_after_three_failures(parts):
     assert ctl.failures == 3 and ctl.snapshot.state == "offline"
     assert ctl.snapshot.error == OFFLINE_ERROR
     assert sched.pending[-1][0] == 60
+
+
+def test_a_robot_with_a_new_address_is_found_after_one_failed_poll(parts):
+    robot = FakeVacuum()
+    robot.answers_at = "10.0.0.9"
+    searches = []
+
+    def relocate():
+        searches.append(robot.ip)
+        robot.move_to(robot.answers_at)
+        return robot.ip
+
+    fetches = []
+
+    def fetch():
+        fetches.append(robot.ip)
+        return build_fake_payload()
+
+    ctl, sched, events = make(parts, vacuum=robot, fetch=fetch, relocate=relocate)
+    ctl.start()
+    assert searches == ["127.0.0.1"]
+    assert fetches[-1] == "10.0.0.9"  # the map is fetched again through the new address
+    assert ("robot-moved", "10.0.0.9") in events
+    assert ctl.snapshot.state == "docked" and ctl.failures == 0
+    assert len(sched.armed("poll")) == 1  # the found robot is polled on the normal timer
+
+
+def test_the_robot_is_looked_for_now_and_then_while_offline(parts):
+    class Dead(FakeVacuum):
+        def poll(self):
+            raise OSError("timeout")
+
+    searches = []
+
+    def relocate():
+        searches.append(ctl.failures)
+        return None  # not found, or still at the same address
+
+    ctl, sched, events = make(parts, vacuum=Dead(), relocate=relocate)
+    ctl.start()
+    for _ in range(11):
+        sched.fire()
+    assert searches == [1, 5, 10]
+    assert not [e for e in events if isinstance(e, tuple) and e[0] == "robot-moved"]
+    assert ctl.snapshot.state == "offline"
+
+
+def test_a_failed_search_is_only_logged(parts):
+    class Dead(FakeVacuum):
+        def poll(self):
+            raise OSError("timeout")
+
+    def relocate():
+        raise OSError("network unreachable")
+
+    ctl, sched, events = make(parts, vacuum=Dead(), relocate=relocate)
+    ctl.start()
+    sched.fire()
+    assert ctl.failures == 2 and len(sched.armed("poll")) == 1
+    assert not [e for e in events if isinstance(e, tuple) and e[0] == "action-failed"]
 
 
 def test_actions_poke_and_report_errors(parts):

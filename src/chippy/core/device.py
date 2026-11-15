@@ -23,20 +23,35 @@ class MiotLike(Protocol):
 
 
 class Vacuum:
-    def __init__(self, dev: MiotLike, profile: Profile):
+    def __init__(self, dev: MiotLike, profile: Profile, ip: str = "", open_device=None):
         self._dev = dev
         self._profile = profile
         self._lock = threading.Lock()
+        self.ip = ip
+        self._open_device = open_device  # ip -> MiotLike, for move_to()
 
     @classmethod
     def connect(cls, ip: str, token: str, profile: Profile) -> "Vacuum":
-        from miio import MiotDevice
+        def open_device(address: str):
+            from miio import MiotDevice
 
-        dev = MiotDevice(ip=ip, token=token, model=profile.models[0], mapping={}, timeout=5)
-        # python-miio 0.5.12 reads Device.retry_count on every send(); the class default of 3
-        # keeps a dead robot holding the device lock for ~20 s per call.
-        dev.retry_count = 1
-        return cls(dev, profile)
+            dev = MiotDevice(
+                ip=address, token=token, model=profile.models[0], mapping={}, timeout=5
+            )
+            # python-miio 0.5.12 reads Device.retry_count on every send(); the class default
+            # of 3 keeps a dead robot holding the device lock for ~20 s per call.
+            dev.retry_count = 1
+            return dev
+
+        return cls(open_device(ip), profile, ip, open_device)
+
+    def move_to(self, ip: str) -> None:
+        """Talk to the robot at its new address from now on."""
+        if self._open_device is None:
+            raise DeviceError("this connection can't change address")
+        dev = self._open_device(ip)
+        with self._lock:
+            self._dev, self.ip = dev, ip
 
     def poll(self) -> Snapshot:
         props = [{"did": key, "siid": s, "piid": p} for key, (s, p) in self._profile.props.items()]

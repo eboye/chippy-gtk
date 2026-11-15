@@ -286,8 +286,15 @@ class FakeVacuum:
         )
         self._next: str | None = None
         self.live_step = 0  # where the fake robot is on its loop; advances each cleaning poll
+        self.ip = "127.0.0.1"
+        self.answers_at: str | None = None  # testing: the robot moved to this address
+
+    def move_to(self, ip: str) -> None:
+        self.ip = ip
 
     def poll(self) -> Snapshot:
+        if self.answers_at is not None and self.ip != self.answers_at:
+            raise TimeoutError("no answer at " + self.ip)
         snap = replace(self._snap, room_settings=self.fake_map.room_settings)
         if snap.state == "cleaning":
             self.live_step += 1

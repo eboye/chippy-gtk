@@ -54,6 +54,19 @@ def test_fake_app_starts_and_writes_state(tmp_path):
 
 
 @needs_display
+def test_fake_app_finds_a_robot_that_got_a_new_address(tmp_path):
+    data = _state_when(
+        tmp_path,
+        lambda d: d.get("saved_ip") == "127.0.0.9" and d.get("robot_state") == "docked",
+        CHIPPY_FAKE_MOVED="1",
+    )
+    assert data.get("robot_ip") == "127.0.0.9", data
+    assert data.get("saved_ip") == "127.0.0.9", data  # remembered in the keyring
+    assert data.get("robot_state") == "docked", data
+    assert not data.get("banner"), data
+
+
+@needs_display
 def test_fake_app_reports_edit_mode_and_the_map_zones(tmp_path):
     data = _state_when(tmp_path, lambda d: d.get("page") == "main" and d.get("rooms"))
     edit = data.get("edit")

@@ -217,3 +217,28 @@ def test_room_settings_switch_is_4_26():
     vac.set_room_settings_enabled(True)
     vac.set_room_settings_enabled(False)
     assert dev.calls == [("set", 4, 26, 1), ("set", 4, 26, 0)]
+
+
+def test_move_to_talks_to_the_new_address():
+    opened = {}
+
+    def open_device(ip):
+        opened[ip] = RecordingDev()
+        return opened[ip]
+
+    vac = Vacuum(open_device("10.0.0.1"), R2209, "10.0.0.1", open_device)
+    vac.move_to("10.0.0.9")
+    vac.start()
+    assert vac.ip == "10.0.0.9"
+    assert opened["10.0.0.9"].calls and not opened["10.0.0.1"].calls
+
+
+def test_connect_can_move():
+    vac = Vacuum.connect("10.0.0.1", "0" * 32, R2209)
+    vac.move_to("10.0.0.9")
+    assert vac.ip == "10.0.0.9" and vac._dev.ip == "10.0.0.9"
+
+
+def test_move_to_needs_a_way_to_open_the_device():
+    with pytest.raises(DeviceError):
+        Vacuum(RecordingDev(), R2209).move_to("10.0.0.9")
