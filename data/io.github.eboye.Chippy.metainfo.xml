@@ -40,6 +40,17 @@
   <!-- Newest release first. Each one needs a description: it becomes the "What's new" part of
        the GitHub release notes (packaging/build.py release-notes) and shows in app stores. -->
   <releases>
+    <release version="0.1.1" date="2026-11-15">
+      <url type="details">https://github.com/eboye/chippy-gtk/releases/tag/v0.1.1</url>
+      <description>
+        <p>Chippy now finds your robot again by itself when your router gives it a new IP address.</p>
+        <ul>
+          <li>When the robot stops answering, Chippy looks for it on your local network by its device ID, switches to its new address, reloads the map and remembers the address for next time</li>
+          <li>No Xiaomi cloud or sign-in is needed for this; it works while the robot is on the same network as your computer</li>
+          <li>The store description now mentions the map editor, live position and QR-code sign-in</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-11-10">
       <url type="details">https://github.com/eboye/chippy-gtk/releases/tag/v0.1.0</url>
       <description>
