@@ -5,6 +5,9 @@ import pytest
 from gi.repository import GLib
 
 from chippy.controller import (
+    MAP_PENDING,
+    MAP_WAIT_INTERVAL,
+    MAP_WAIT_LIMIT,
     OFFLINE_ERROR,
     MapNotUpdated,
     ThreadRunner,
@@ -867,7 +870,7 @@ def test_merge_refresh_failure_is_pending_not_an_error(parts):
         delays.append(sched.fire_named("map-retry"))
     assert delays == [2, 4, 6]
     assert len(done) == 1 and isinstance(done[0], MapNotUpdated)
-    assert str(done[0]) == "Saved; the map will update shortly"
+    assert str(done[0]) == MAP_PENDING
     assert 4 not in parts["rooms"].names  # the robot merged it: its name goes
 
 
@@ -1155,3 +1158,91 @@ def test_an_older_map_answer_never_replaces_a_newer_one(parts):
     assert ctl.current_frame.zones == fm.zones
     assert parts["map_cache"].load() == build_fake_payload(fake_map=fm)
     assert got[0].zones == fm.zones
+
+
+def test_a_lagging_merge_pauses_editing_until_the_map_shows_it(parts):
+    ctl, _vac, fm, events = edit_ctl(parts)
+    fm.lag = 10
+    done = []
+    ctl.merge_rooms(ctl._map_id, 2, 4, done.append)
+    while not done:
+        ctl._scheduler.fire_named("map-retry")
+    assert isinstance(done[0], MapNotUpdated)
+    # the robot merged, but the map still shows room 4: a session from it would undo that
+    assert ctl.map_updating and not ctl.can_edit
+    refused = []
+    ctl.begin_edit(lambda s, e: refused.append((s, e)))
+    assert refused[0][0] is None
+    assert ctl._scheduler.fire_named("map-wait") == MAP_WAIT_INTERVAL
+    assert ctl.map_updating and 4 in {r.id for r in ctl.rooms}  # still the old map
+    fm.lag = 0  # the cloud catches up
+    events.clear()
+    ctl._scheduler.fire_named("map-wait")
+    assert not ctl.map_updating and ctl.can_edit
+    assert 4 not in {r.id for r in ctl.rooms}
+    assert "map-changed" in events
+    assert not ctl._scheduler.armed("map-wait")
+
+
+def test_the_map_wait_gives_up_after_its_limit(parts):
+    now = [0.0]
+    ctl, _vac, fm, events = edit_ctl(parts, clock=lambda: now[0])
+    fm.lag = 100
+    done = []
+    ctl.merge_rooms(ctl._map_id, 2, 4, done.append)
+    while not done:
+        ctl._scheduler.fire_named("map-retry")
+    fires = 0
+    while ctl._scheduler.armed("map-wait"):
+        now[0] += MAP_WAIT_INTERVAL
+        ctl._scheduler.fire_named("map-wait")
+        fires += 1
+    assert fires == MAP_WAIT_LIMIT // MAP_WAIT_INTERVAL
+    assert not ctl.map_updating and ctl.can_edit  # never stuck: editing comes back
+
+
+def test_stop_ends_the_map_wait(parts):
+    ctl, _vac, fm, _ev = edit_ctl(parts)
+    fm.lag = 10
+    done = []
+    ctl.merge_rooms(ctl._map_id, 2, 4, done.append)
+    while not done:
+        ctl._scheduler.fire_named("map-retry")
+    ctl.stop()
+    assert not ctl.map_updating and not ctl._scheduler.armed("map-wait")
+
+
+def test_a_late_rename_drops_the_local_name_once_the_map_shows_it(parts):
+    ctl, _vac, fm, _ev = edit_ctl(parts)
+    fm.lag = 10
+    out = []
+    ctl.begin_edit(lambda s, e: out.append(s))
+    edited = out[0].copy()
+    edited.names[3] = "Guest room"
+    done = []
+    ctl.save_edit(out[0], edited, lambda *args: done.append(args))
+    while not done:
+        ctl._scheduler.fire_named("map-retry")
+    assert isinstance(done[0][0], MapNotUpdated) and not ctl.can_edit
+    assert parts["rooms"].names[3] == "Guest room"  # shown from the local copy meanwhile
+    fm.lag = 0
+    ctl._scheduler.fire_named("map-wait")
+    assert ctl.can_edit and ctl.cloud_names[3] == "Guest room"
+    assert 3 not in parts["rooms"].names  # the robot's name is shown now
+
+
+def test_zones_the_robot_rounds_still_count_as_saved(parts):
+    ctl, _vac, fm, _ev = edit_ctl(parts)
+    fm.zone_grid = 50
+    out = []
+    ctl.begin_edit(lambda s, e: out.append(s))
+    edited = out[0].copy()
+    edited.zones = MapZones(
+        no_go=(Rect(112, 238, 1012, 1137),),
+        walls=(Line(1000, 4020, 2013, 4020),),
+    )
+    done = []
+    ctl.save_edit(out[0], edited, lambda *args: done.append(args))
+    assert done == [(None, None, ["zones"])]  # confirmed at once, not "map will update"
+    assert fm.zones != edited.zones  # the robot really did move the corners
+    assert not ctl.map_updating and ctl.can_edit

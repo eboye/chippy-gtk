@@ -146,6 +146,11 @@ Zones, walls, names, room settings and order are staged until you press **Save t
 > **Merge** and **Split** are applied to the robot as soon as you confirm them, and **Cancel**
 > can't undo them.
 
+After a save, merge or split, Chippy waits for the robot to publish its updated map to the
+Xiaomi cloud. That usually takes a few seconds. If it takes longer, the pencil button stays
+greyed out until the new map arrives (for up to two minutes), so the next edit never starts
+from the old map.
+
 Edits change the map stored on the robot, which the phone app shares, so the same rooms and
 zones show up there too. The **Use room settings** switch turns the robot's per-room settings
 on or off; while it's off, every room is cleaned with the general settings.

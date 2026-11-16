@@ -14,7 +14,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GObject, Gtk  # noqa: E402
 
-from chippy.controller import VacuumController  # noqa: E402
+from chippy.controller import MAP_PENDING, VacuumController  # noqa: E402
 from chippy.core.device import DeviceError  # noqa: E402
 from chippy.core.fake import FakeMap, FakeVacuum, _cell_mm, fake_saved_payload  # noqa: E402
 from chippy.core.mapedit import Line, MapZones, Rect  # noqa: E402
@@ -384,7 +384,7 @@ def check_merge_with_a_lagging_map(window, ctl, fm, toasts):
     assert window.editing  # waiting for the map
     for _ in range(3):
         ctl._scheduler.fire_named("map-retry")
-    assert toasts[-1] == "Saved; the map will update shortly", toasts
+    assert toasts[-1] == MAP_PENDING, toasts
     assert not window.editing and 2 not in fm.ids()
     fm.lag = 0
     ctl.refresh_map()

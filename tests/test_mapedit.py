@@ -232,3 +232,26 @@ def test_remap_names():
         3: "Hall",
         11: "Bath 2",
     }
+
+
+def test_zones_close_to_allows_the_robots_rounding():
+    drawn = MapZones(
+        no_go=(Rect(112, 238, 1012, 1137),),
+        no_mop=(Rect(0, 0, 500, 500), Rect(2000, 2000, 2600, 2600)),
+        walls=(Line(1000, 4020, 2013, 4020),),
+    )
+    stored = MapZones(
+        no_go=(Rect(100, 250, 1000, 1150),),
+        no_mop=(Rect(2000, 2000, 2600, 2600), Rect(0, 0, 500, 500)),  # another order
+        walls=(Line(2000, 4000, 1000, 4000),),  # drawn the other way round
+    )
+    assert drawn.close_to(stored) and stored.close_to(drawn)
+    assert MapZones().close_to(MapZones())
+
+
+def test_zones_close_to_rejects_real_differences():
+    zone = MapZones(no_go=(Rect(0, 0, 1000, 1000),))
+    assert not zone.close_to(MapZones(no_go=(Rect(0, 0, 1000, 1060),)))  # 60 mm off
+    assert not zone.close_to(MapZones())  # a zone missing
+    assert not zone.close_to(MapZones(no_mop=(Rect(0, 0, 1000, 1000),)))  # another kind
+    assert not zone.close_to(zone.__class__(no_go=zone.no_go * 2))  # an extra one

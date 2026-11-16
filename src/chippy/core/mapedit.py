@@ -8,6 +8,9 @@ from dataclasses import dataclass, field, replace
 from .state import name_to_value
 
 MIN_SIZE_MM = 300
+# How far (mm) the robot may move a saved zone or wall corner when it stores it: it keeps
+# coordinates on its own grid, so the map can show 600 for a corner drawn at 612.
+ZONE_TOLERANCE_MM = 50
 # Segment ids travel over D-Bus as `u` (uint32); 0 is not a real room.
 SEGMENT_ID_LIMIT = 2**32
 # Labels of the save steps, for messages ("Saved zones; room names failed: ...").
@@ -90,6 +93,33 @@ class MapZones:
             tuple(Line(*v) for v in values("line")),
         )
         return zones, known
+
+    def close_to(self, other: "MapZones", tolerance: int = ZONE_TOLERANCE_MM) -> bool:
+        """The same zones and walls, each corner within `tolerance` mm, in any order."""
+
+        def coords(items, line=False) -> list[list[int]]:
+            out = []
+            for item in items:
+                v = item.as_list()
+                if line and (v[2], v[3]) < (v[0], v[1]):  # a wall may come back reversed
+                    v = [v[2], v[3], v[0], v[1]]
+                out.append(v)
+            return sorted(out)
+
+        pairs = (
+            (coords(self.no_go), coords(other.no_go)),
+            (coords(self.no_mop), coords(other.no_mop)),
+            (coords(self.walls, True), coords(other.walls, True)),
+        )
+        return all(
+            len(mine) == len(theirs)
+            and all(
+                abs(a - b) <= tolerance
+                for m, t in zip(mine, theirs, strict=True)
+                for a, b in zip(m, t, strict=True)
+            )
+            for mine, theirs in pairs
+        )
 
     def payload(self) -> dict:
         return {

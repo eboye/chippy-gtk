@@ -50,7 +50,11 @@ _NO_EDIT_STATES = {"cleaning", "returning", "paused", "offline"}
 _TRANSPORT_ERRORS = (DeviceException, OSError, TimeoutError)
 # s between map refreshes while waiting for an accepted edit to show on the cloud's map
 MAP_RETRY_DELAYS = (2, 4, 6)
-MAP_PENDING = "Saved; the map will update shortly"
+MAP_PENDING = "Saved; editing resumes once the map updates"
+# After an edit the map didn't show in time: re-read it every MAP_WAIT_INTERVAL s, with
+# editing paused (a session built from the old map would undo the edit), for MAP_WAIT_LIMIT s.
+MAP_WAIT_INTERVAL = 10
+MAP_WAIT_LIMIT = 120
 
 
 class MapNotUpdated(Exception):
@@ -202,6 +206,11 @@ class VacuumController(GObject.Object):
         self._live_running = False  # timer armed or a request in flight
         self._live_generation = 0  # bumped when the loop stops; older answers are dropped
         self._live_empty = 0
+        # set while the cloud's map doesn't show an edit yet: the check it must pass
+        self._map_check: Callable[[MapFrame], bool] | None = None
+        self._map_confirmed: Callable[[], None] | None = None  # runs once the map shows it
+        self._map_wait_deadline = 0.0
+        self._map_wait_timer: int | None = None
         # finds the robot after its IP address changed; returns the new address or None
         self._relocate = relocate
         self._relocating = False
@@ -232,6 +241,7 @@ class VacuumController(GObject.Object):
         for handle in list(self._retry_timers):
             self._scheduler.cancel(handle)
         self._retry_timers.clear()
+        self._end_map_wait()
         self._stop_live(emit=False)
         self._runner.shutdown()
         self._cloud_runner.shutdown()
@@ -485,7 +495,13 @@ class VacuumController(GObject.Object):
             self._map_applied = seq
             self._map_cache.save(payload)
             self._remember_map_id(payload)
+            confirmed = None
+            if self._map_check is not None and self._map_check(frame):
+                confirmed = self._map_confirmed
+                self._end_map_wait()  # before map-changed, so editing shows as allowed again
             self._set_frame(frame)
+            if confirmed is not None:
+                confirmed()
         if on_result is not None:
             on_result(frame, None)
 
@@ -521,6 +537,40 @@ class VacuumController(GObject.Object):
             self._retry_timers.add(handle)
 
         attempt()
+
+    def _wait_for_map(
+        self, check: Callable[[MapFrame], bool], on_confirmed: Callable[[], None] | None = None
+    ) -> None:
+        """Pause editing until the saved map passes `check`, re-reading it now and then;
+        `on_confirmed` runs when it does (not when the wait times out)."""
+        self._end_map_wait()
+        self._map_check, self._map_confirmed = check, on_confirmed
+        self._map_wait_deadline = self._clock() + MAP_WAIT_LIMIT
+        self._arm_map_wait()
+        self.emit("snapshot-changed")  # can_edit changed
+
+    def _arm_map_wait(self) -> None:
+        def fire() -> None:
+            self._map_wait_timer = None
+            if self._map_check is None or self._stopped:
+                return
+            if self._clock() >= self._map_wait_deadline:
+                log.warning("the map never showed the last edit; editing allowed again")
+                self._end_map_wait()
+                self.emit("snapshot-changed")
+                return
+            self.refresh_map(lambda _frame, _error: self._arm_map_wait())
+
+        if self._map_check is not None and not self._stopped and self._map_wait_timer is None:
+            self._map_wait_timer = self._scheduler.call_later(
+                MAP_WAIT_INTERVAL, fire, name="map-wait"
+            )
+
+    def _end_map_wait(self) -> None:
+        self._map_check = self._map_confirmed = None
+        if self._map_wait_timer is not None:
+            self._scheduler.cancel(self._map_wait_timer)
+            self._map_wait_timer = None
 
     def _cloud_session_expired(self) -> None:
         """Stop every cloud fetch (polling the robot goes on) and tell the user once."""
@@ -581,12 +631,20 @@ class VacuumController(GObject.Object):
             and not self.cloud_expired
             and self._polled
             and self.snapshot.state not in _NO_EDIT_STATES
+            and self._map_check is None
             and (
                 "room_settings" not in self.profile.props or self.snapshot.room_settings is not None
             )
         )
 
+    @property
+    def map_updating(self) -> bool:
+        """An edit reached the robot but the cloud's map doesn't show it yet."""
+        return self._map_check is not None
+
     def _no_edit_reason(self) -> str:
+        if self._map_check is not None:
+            return "the map is still updating"
         if self.snapshot.state in {"cleaning", "returning", "paused"}:
             return "the robot started cleaning"
         if self.snapshot.state == "offline":
@@ -668,28 +726,34 @@ class VacuumController(GObject.Object):
         done_kinds: list[str] = []
 
         def shows_saved(frame: MapFrame) -> bool:
-            if "zones" in done_kinds and frame.zones != edited.zones:
+            if "zones" in done_kinds and not frame.zones.close_to(edited.zones):
                 return False
             if "names" in done_kinds:
                 return all(frame.names.get(seg) == name for seg, name in renamed.items())
             return True
+
+        def drop_confirmed_names() -> None:
+            """The robot's names show now: drop the local copies it confirmed."""
+            if "names" not in done_kinds or self._frame is None:
+                return
+            for seg, name in renamed.items():
+                if self._frame.names.get(seg) == name:
+                    self._room_store.rename(seg, "")
+            self._rebuild_rooms()
 
         def finish(error: Exception | None, kind: str | None) -> None:
             def settled(confirmed: bool, _refresh_error) -> None:
                 if self._stopped:
                     on_done(error or RuntimeError("Chippy has stopped"), None, list(done_kinds))
                     return
-                if "names" in done_kinds and self._frame is not None:
-                    # the robot's names show now: drop the local copies it confirmed
-                    for seg, name in renamed.items():
-                        if self._frame.names.get(seg) == name:
-                            self._room_store.rename(seg, "")
-                    self._rebuild_rooms()
+                drop_confirmed_names()
                 if error is None:
                     self.emit("edit-saved")
                     on_done(None if confirmed else MapNotUpdated(), None, list(done_kinds))
                 else:
                     on_done(error, kind, list(done_kinds))
+                if not confirmed:  # after on_done: the caller hears the result first
+                    self._wait_for_map(shows_saved, drop_confirmed_names)
 
             if error is None and {"zones", "names"} & set(done_kinds):
                 self._refresh_until(shows_saved, settled)
@@ -841,6 +905,8 @@ class VacuumController(GObject.Object):
                 remap(self._frame_ids() - before if confirmed else set())
                 self._rebuild_rooms()
                 on_done(None if confirmed else MapNotUpdated())
+                if not confirmed:  # after on_done: the caller hears the result first
+                    self._wait_for_map(shows_it)
                 self.poke()
 
             self._refresh_until(shows_it, settled)

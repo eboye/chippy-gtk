@@ -528,6 +528,10 @@ class MainWindow(Adw.ApplicationWindow):
         can = self._ctl is not None and self._ctl.can_edit
         saving = self.edit_panel.saving
         self.edit_button.set_sensitive(can and not saving)
+        updating = self._ctl is not None and self._ctl.map_updating
+        self.edit_button.set_tooltip_text(
+            "Edit map (waiting for the map to show the last change)" if updating else "Edit map"
+        )
         self.edit_panel.set_allowed(can)
         if saving:
             return  # judged again when the save is over (`_could_edit` keeps its value)
@@ -683,6 +687,8 @@ class MainWindow(Adw.ApplicationWindow):
             "room": self.edit_panel.room,
             "hint": self.hint.get_label(),
             "save_sensitive": self.edit_panel.save_button.get_sensitive(),
+            "edit_sensitive": self.edit_button.get_sensitive(),
+            "edit_tooltip": self.edit_button.get_tooltip_text(),
             "buttons": buttons,
             "zones": {
                 "no_go": len(zones.no_go),

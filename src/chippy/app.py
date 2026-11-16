@@ -276,6 +276,7 @@ class ChippyApp(Adw.Application):
             fake_map = FakeMap()  # one map shared by the robot, the map fetch and live frames
             lag = os.environ.get("CHIPPY_FAKE_MAP_LAG", "")  # testing: the cloud's map lags
             fake_map.lag = int(lag) if lag.isdecimal() else 0
+            fake_map.lag_file = os.environ.get("CHIPPY_FAKE_MAP_LAG_FILE", "")
             # testing: the robot's room settings can't be read, with "Use room settings" on
             cleanset_unknown = os.environ.get("CHIPPY_FAKE_CLEANSET_UNKNOWN") == "1"
             fake_map.room_settings = cleanset_unknown

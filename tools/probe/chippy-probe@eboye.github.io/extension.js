@@ -414,6 +414,69 @@ export default class ChippyProbe extends Extension {
 
         await this._editRename(edited);
         await this._editSplit(edited, roomCount);
+        await this._editWaitsForMap(edited);
+    }
+
+    // The cloud's map lags well past Chippy's quick retries: the save still counts, but the
+    // Edit button stays off (a session from the old map would undo the rename) until the map
+    // shows it, then works again.
+    async _editWaitsForMap(edited) {
+        const name = 'Study';
+        const lagFile = `${OUT}/map-lag`;
+        GLib.file_set_contents(lagFile, '5');
+        const on = await this._reenterEdit(edited);
+        await this._chooseTool('select');
+        await this._clickApp(this._state().rooms['3']);
+        const picked = await this._waitFor(
+            () => edited().room === 3 && edited().buttons.name !== null, 3000);
+        let left = false;
+        if (on && picked) {
+            await this._clickApp(edited().buttons.name);
+            await this._key(Clutter.KEY_a, [Clutter.KEY_Control_L]);
+            await this._type(name);
+            await this._sleep(400);
+            if (edited().dirty && edited().save_sensitive) {
+                await this._clickApp(edited().buttons.save);
+                left = await this._waitFor(() => edited().mode === false, 25000);
+            }
+        }
+        await this._sleep(500);
+        const paused = left && !edited().edit_sensitive &&
+            /waiting for the map/.test(edited().edit_tooltip ?? '');
+        // a click on the greyed-out button must not open edit mode
+        await this._clickApp(edited().buttons.edit);
+        await this._sleep(800);
+        const stayedOut = edited().mode === false;
+        await this._shot('edit-map-updating');
+        this._check('edit-paused-while-map-updates', on && picked && paused && stayedOut,
+            `on=${on} picked=${picked} left=${left} stayedOut=${stayedOut} ` +
+            `${JSON.stringify(edited())}`);
+
+        const resumed = await this._waitFor(
+            () => edited().edit_sensitive && this._state().room_names?.['3'] === name, 45000);
+        GLib.file_set_contents(lagFile, '1');
+        let opens = false;
+        let openMs = -1;
+        if (resumed) {
+            // Move off the button and back first, as a hand on a mouse does: after a click
+            // on the greyed-out button, a second click on the same pixel with no motion in
+            // between only reaches GTK on the next pointer event (virtual pointer only).
+            const [ex, ey] = this._toStage(this._appWindow(), edited().buttons.edit);
+            this._pointer.notify_absolute_motion(GLib.get_monotonic_time(), ex + 150, ey + 150);
+            await this._sleep(300);
+            const t0 = GLib.get_monotonic_time();
+            await this._clickApp(edited().buttons.edit);
+            opens = await this._waitFor(
+                () => edited().mode === true && edited().buttons.merge !== null, 8000);
+            openMs = Math.round((GLib.get_monotonic_time() - t0) / 1000);
+            await this._sleep(800);
+            await this._shot('edit-map-updated');
+            await this._clickApp(edited().buttons.edit);  // no changes: leaves at once
+            await this._waitFor(() => edited().mode === false, 4000);
+        }
+        this._check('edit-resumes-when-map-shows', resumed && opens,
+            `resumed=${resumed} opens=${opens} openMs=${openMs} tooltip=${edited().edit_tooltip} ` +
+            `names=${JSON.stringify(this._state().room_names)}`);
     }
 
     // Edit mode again, Select tool; true once the toolbar is up.

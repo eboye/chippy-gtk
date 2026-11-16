@@ -8,6 +8,7 @@ import struct
 import time
 import zlib
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 
 from micloud.micloudexception import MiCloudAccessDenied
 
@@ -98,6 +99,10 @@ class FakeMap:
     # Saved-map fetches after each edit that still return the map from before it, like the
     # cloud taking a while to publish the robot's new map (see `saved_view`).
     lag: int = 0
+    # testing: the robot stores zone and wall corners rounded to this many mm (0: exact)
+    zone_grid: int = 0
+    # testing: a file whose number replaces `lag` at each edit (a running check changes it)
+    lag_file: str = ""
     _stale: "FakeMap | None" = field(default=None, init=False, repr=False, compare=False)
     _stale_left: int = field(default=0, init=False, repr=False, compare=False)
 
@@ -108,6 +113,11 @@ class FakeMap:
     def before_edit(self) -> None:
         """Called before an edit is applied: with `lag`, keep the current map for that many
         saved-map fetches."""
+        if self.lag_file:
+            try:
+                self.lag = int(Path(self.lag_file).read_text().strip() or 0)
+            except (OSError, ValueError):
+                pass  # no file yet: keep the current lag
         if self.lag > 0:
             self._stale = FakeMap(
                 list(self.layout),
@@ -352,7 +362,14 @@ class FakeVacuum:
         self.edits.append(payload)
         fm.before_edit()
         if "vw" in payload:
-            fm.zones = MapZones.parse(payload["vw"])
+            vw = payload["vw"]
+            if fm.zone_grid:
+                step = fm.zone_grid
+                vw = {
+                    key: [[round(v / step) * step for v in item] for item in items]
+                    for key, items in vw.items()
+                }
+            fm.zones = MapZones.parse(vw)
         for key, item in (payload.get("nsr") or {}).items():
             fm.names[int(key)] = base64.b64decode(item["name"]).decode("utf-8")
         for seg, suction, water, passes, *_ in payload.get("customeClean") or []:
