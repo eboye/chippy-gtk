@@ -40,6 +40,16 @@
   <!-- Newest release first. Each one needs a description: it becomes the "What's new" part of
        the GitHub release notes (packaging/build.py release-notes) and shows in app stores. -->
   <releases>
+    <release version="0.1.4" date="2026-11-16">
+      <url type="details">https://github.com/eboye/chippy-gtk/releases/tag/v0.1.4</url>
+      <description>
+        <p>Fixes per-room mopping levels.</p>
+        <ul>
+          <li>The robot stores each room’s mopping on a different scale than its general setting; Chippy now reads and writes it correctly, matching the Xiaomi Home app</li>
+          <li>Before this fix, the map editor showed each room’s mopping one level too high and saved it one level too low, and room cleaning from Chippy 0.1.3 used the misread level. If you saved room settings with an earlier version, check them in the editor or the phone app</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.3" date="2026-11-16">
       <url type="details">https://github.com/eboye/chippy-gtk/releases/tag/v0.1.3</url>
       <description>
