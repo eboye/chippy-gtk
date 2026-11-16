@@ -40,6 +40,17 @@
   <!-- Newest release first. Each one needs a description: it becomes the "What's new" part of
        the GitHub release notes (packaging/build.py release-notes) and shows in app stores. -->
   <releases>
+    <release version="0.1.2" date="2026-11-16">
+      <url type="details">https://github.com/eboye/chippy-gtk/releases/tag/v0.1.2</url>
+      <description>
+        <p>Safer map editing when the Xiaomi cloud is slow to show the robot’s new map.</p>
+        <ul>
+          <li>After a save, merge or split, editing pauses until the robot’s updated map arrives, so the next edit can’t start from the old map and undo the change; the pencil button explains the wait, and editing comes back after two minutes at most</li>
+          <li>Zones and walls the robot stores slightly rounded now count as saved straight away, instead of showing “the map will update shortly”</li>
+          <li>A room name that reaches the map late replaces Chippy’s temporary local copy as soon as it shows</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-11-15">
       <url type="details">https://github.com/eboye/chippy-gtk/releases/tag/v0.1.1</url>
       <description>
