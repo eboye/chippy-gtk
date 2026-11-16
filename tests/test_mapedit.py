@@ -58,7 +58,7 @@ def test_zones_payload_is_the_complete_set():
 
 def test_parse_cleanset_from_a_live_frame():
     settings, order = parse_cleanset(
-        {"1": [1, 3, 1, 2, -1], "2": [3, 1, 2, 1, -1], "x": [0]}, R2209
+        {"1": [1, 4, 1, 2, -1], "2": [3, 2, 2, 1, -1], "x": [0]}, R2209
     )
     assert settings == {
         1: RoomSetting("standard", "high", 1),
@@ -69,9 +69,21 @@ def test_parse_cleanset_from_a_live_frame():
     # ids as decode_map takes them: decimal digits only, 0 < id < 2**32
     junk = {"0": [1, 1, 1], "²": [1, 1, 1], str(2**32): [1, 1, 1], "3": [1, 1, 1]}
     assert set(parse_cleanset(junk, R2209)[0]) == {3}
-    assert parse_cleanset(json.dumps({"1": [0, 2, 1, 1]}), R2209)[0] == {
+    assert parse_cleanset(json.dumps({"1": [0, 3, 1, 1]}), R2209)[0] == {
         1: RoomSetting("quiet", "medium", 1)
     }
+
+
+def test_room_mopping_uses_the_per_room_scale():
+    """Live-verified on the r2209: a room stored with mopping 2 shows as "Low water" in the
+    Xiaomi Home app and 3 as "Medium water" (the water property's scale is one lower)."""
+    settings, _ = parse_cleanset({"4": [2, 2, 1, 1, -1], "2": [1, 3, 2, 2, -1]}, R2209)
+    assert settings[4] == RoomSetting("strong", "low", 1)
+    assert settings[2] == RoomSetting("standard", "medium", 2)
+    assert [R2209.room_water_value(n) for n in ("low", "medium", "high")] == [2, 3, 4]
+    # the room-clean command takes the water property's scale
+    params = R2209.room_clean_params([4], "standard", "high", settings)
+    assert json.loads(params[1]["value"]) == {"selects": [[4, 1, 2, 1, 1]]}
 
 
 def _session(**kw):
@@ -147,7 +159,8 @@ def test_changes_in_fixed_order_with_exact_payloads():
         "nsr": {"2": {"name": name, "type": 0, "index": 0}},
         "mapid": 7,
     }
-    assert edits[2].payload == {"customeClean": [[1, 3, 1, 2], [2, 1, 2, 1]]}
+    # mopping on the per-room scale: low = 2, medium = 3
+    assert edits[2].payload == {"customeClean": [[1, 3, 2, 2], [2, 1, 3, 1]]}
     assert edits[3].payload == {"cleanOrder": [2, 1]}
     assert edits[4] == MapEdit("room_settings", None, True)
 

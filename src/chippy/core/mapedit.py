@@ -142,7 +142,8 @@ DEFAULT_SETTING = RoomSetting("standard", "medium", 1)
 
 
 def parse_cleanset(obj, profile) -> tuple[dict[int, RoomSetting], list[int]] | None:
-    """A live frame's `cleanset`: {"<seg>": [suction, water 1-3, passes, order, ...]}."""
+    """A live frame's `cleanset`: {"<seg>": [suction, water, passes, order, ...]}, water
+    on the per-room scale (`profile.room_water`)."""
     if isinstance(obj, str):
         try:
             obj = json.loads(obj)
@@ -164,7 +165,7 @@ def parse_cleanset(obj, profile) -> tuple[dict[int, RoomSetting], list[int]] | N
         seg = int(key)
         settings[seg] = RoomSetting(
             profile.suction.get(suction, "standard"),
-            profile.water.get(water, "medium"),
+            profile.room_water_name(water),
             min(max(passes, 1), 3),
         )
         if len(values) > 3 and isinstance(values[3], int) and values[3] > 0:
@@ -232,7 +233,7 @@ class EditSession:
                 [
                     seg,
                     name_to_value(profile.suction, s.suction),
-                    name_to_value(profile.water, s.water),
+                    profile.room_water_value(s.water),
                     s.passes,
                 ]
                 for seg, s in sorted(self.settings.items())

@@ -35,6 +35,15 @@ class Profile:
     # faults that are only reminders ("mopping done, clean the mop"): no error, no alarm
     reminder_faults: frozenset[int] = frozenset()
     map_update_piid: int | None = None
+    # Mopping levels in the robot's stored per-room settings (customeClean / cleanset), which
+    # use another scale than the water property and the room-clean command (`water`).
+    room_water: dict[int, str] | None = None
+
+    def room_water_name(self, value: int, default: str = "medium") -> str:
+        return (self.room_water or self.water).get(value, default)
+
+    def room_water_value(self, name: str) -> int:
+        return name_to_value(self.room_water or self.water, name)
 
     def map_state(self, raw_status: int | None, charging: int | None) -> str:
         if raw_status in self.cleaning_statuses:
@@ -261,6 +270,9 @@ R2209 = Profile(
     statuses={3: "paused", 4: "error", 5: "returning", 6: "charging", 13: "docked"},
     suction={0: "quiet", 1: "standard", 2: "strong", 3: "turbo"},
     water={1: "low", 2: "medium", 3: "high"},
+    # one higher than `water`, as Tasshack/dreame-vacuum writes them for models without
+    # wetness levels; live-verified: stored 2 shows as "Low water" in the Xiaomi Home app
+    room_water={2: "low", 3: "medium", 4: "high"},
     faults=DREAME_FAULTS,
     attention_faults=frozenset({8, 9, 10, 11}),
     reminder_faults=frozenset({68, 114}),

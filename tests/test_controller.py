@@ -262,7 +262,7 @@ class RoomsSpy(FakeVacuum):
 
 
 # the robot's stored settings: room 2 strong, high mopping, two passes; room 1 the defaults
-CLEANSET = {"2": [2, 3, 2, 1, -1], "1": [1, 2, 1, 2, -1]}
+CLEANSET = {"2": [2, 4, 2, 1, -1], "1": [1, 3, 1, 2, -1]}
 
 
 def test_clean_rooms_sends_stored_room_settings_when_they_are_on(parts):

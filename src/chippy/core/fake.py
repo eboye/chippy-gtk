@@ -83,7 +83,7 @@ def layout_neighbours(layout: list[str]) -> dict[int, set[int]]:
 
 def _default_cleanset(layout: list[str]) -> dict[str, list[int]]:
     ids = sorted({int(ch) for row in layout for ch in row if ch.isdigit()})
-    return {str(seg): [1, 2, 1, order, -1] for order, seg in enumerate(ids, 1)}
+    return {str(seg): [1, 3, 1, order, -1] for order, seg in enumerate(ids, 1)}
 
 
 @dataclass
@@ -170,7 +170,7 @@ class FakeMap:
             raise DeviceError("split line does not cross the room")
         self.layout = rows
         orders = [v[3] for v in self.cleanset.values()]
-        self.cleanset[str(new)] = [1, 2, 1, max(orders, default=0) + 1, -1]
+        self.cleanset[str(new)] = [1, 3, 1, max(orders, default=0) + 1, -1]
 
 
 def build_fake_payload(

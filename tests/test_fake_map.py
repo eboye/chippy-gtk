@@ -136,7 +136,7 @@ def test_fake_split_outside_room_and_unknown_keys_raise():
 
 def test_fake_default_map_matches_today():
     fm = FakeMap()
-    assert fm.cleanset == {str(i): [1, 2, 1, i, -1] for i in range(1, 6)}
+    assert fm.cleanset == {str(i): [1, 3, 1, i, -1] for i in range(1, 6)}  # medium mopping
     assert fm.room_settings is False and fm.names == fake.FAKE_NAMES
     assert decode_map(build_fake_payload()).zones == MapZones()
     assert build_fake_payload() == build_fake_payload(fake_map=FakeMap())
@@ -156,7 +156,7 @@ def test_fake_settings_and_order_and_switch():
 
 
 def test_fake_live_frames_carry_cleanset():
-    assert _trailer(fake_live_payload(2, FakeMap()))["cleanset"]["1"] == [1, 2, 1, 1, -1]
+    assert _trailer(fake_live_payload(2, FakeMap()))["cleanset"]["1"] == [1, 3, 1, 1, -1]
     assert "cleanset" not in _trailer(build_fake_payload())
 
 
