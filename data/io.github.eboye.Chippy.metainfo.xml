@@ -40,6 +40,16 @@
   <!-- Newest release first. Each one needs a description: it becomes the "What's new" part of
        the GitHub release notes (packaging/build.py release-notes) and shows in app stores. -->
   <releases>
+    <release version="0.1.3" date="2026-11-16">
+      <url type="details">https://github.com/eboye/chippy-gtk/releases/tag/v0.1.3</url>
+      <description>
+        <p>Room cleaning now follows each room’s own settings.</p>
+        <ul>
+          <li>With “Use room settings” on, rooms you clean from Chippy get the passes, suction and mopping stored on the robot for each room, instead of one pass with the general levels</li>
+          <li>If the stored settings can’t be read, the clean still starts with the general levels</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.2" date="2026-11-16">
       <url type="details">https://github.com/eboye/chippy-gtk/releases/tag/v0.1.2</url>
       <description>
