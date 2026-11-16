@@ -153,7 +153,8 @@ from the old map.
 
 Edits change the map stored on the robot, which the phone app shares, so the same rooms and
 zones show up there too. The **Use room settings** switch turns the robot's per-room settings
-on or off; while it's off, every room is cleaned with the general settings.
+on or off. While it's on, rooms you clean from Chippy get their own passes, suction and
+mopping; while it's off, every room is cleaned once with the general settings.
 
 ## The top-bar extension
 

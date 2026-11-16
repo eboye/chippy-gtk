@@ -356,13 +356,34 @@ class VacuumController(GObject.Object):
         self._runner.run(lambda: method(*args), done)
 
     def clean_rooms(self, ids, on_done=None) -> None:
-        self.act(
-            "clean_rooms",
-            list(ids),
-            self.snapshot.suction or "standard",
-            self.snapshot.water or "medium",
-            on_done=on_done,
-        )
+        """Clean `ids` in that order. With "Use room settings" on, each room gets the
+        passes, suction and mopping stored on the robot (read like the editor reads them),
+        as the phone app does; otherwise, or when they can't be read, the general levels."""
+        ids = list(ids)
+        suction = self.snapshot.suction or "standard"
+        water = self.snapshot.water or "medium"
+        fetch = self._fetch_cleanset
+        if self._stopped or not self.snapshot.room_settings or fetch is None:
+            self.act("clean_rooms", ids, suction, water, on_done=on_done)
+            return
+
+        def got(cleanset, error) -> None:
+            if self._stopped:
+                if on_done is not None:
+                    on_done(error or RuntimeError("Chippy has stopped"))
+                return
+            if isinstance(error, CloudSessionExpired):
+                self._cloud_session_expired()
+            parsed = parse_cleanset(cleanset, self.profile) if error is None else None
+            if parsed is None:
+                log.warning(
+                    "room settings unavailable (%s); cleaning with the general levels",
+                    error or "none found",
+                )
+            rooms = parsed[0] if parsed is not None else None
+            self.act("clean_rooms", ids, suction, water, rooms, on_done=on_done)
+
+        self._cloud_runner.run(fetch, got)
 
     # live position -------------------------------------------------------
     def _live_enabled(self) -> bool:

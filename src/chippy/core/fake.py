@@ -349,7 +349,7 @@ class FakeVacuum:
         name_to_value(self._profile.water, name)
         self._snap = replace(self._snap, water=name)
 
-    def clean_rooms(self, ids: list[int], suction: str, water: str) -> None:
+    def clean_rooms(self, ids: list[int], suction: str, water: str, rooms=None) -> None:
         if not ids:
             raise DeviceError("no rooms selected")
         self.start()

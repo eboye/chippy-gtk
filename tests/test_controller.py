@@ -17,7 +17,7 @@ from chippy.controller import (
 from chippy.core.cloud import CloudSessionExpired
 from chippy.core.device import DeviceError
 from chippy.core.fake import FakeMap, FakeVacuum, _cell_mm, build_fake_payload, fake_saved_payload
-from chippy.core.mapedit import Line, MapZones, Rect, rename_payload
+from chippy.core.mapedit import Line, MapZones, Rect, RoomSetting, rename_payload
 from chippy.core.profiles import R2209
 from chippy.store import MapCache, RoomStore
 
@@ -237,14 +237,87 @@ def test_clean_rooms_uses_current_levels(parts):
     seen = {}
 
     class Spy(FakeVacuum):
-        def clean_rooms(self, ids, suction, water):
+        def clean_rooms(self, ids, suction, water, rooms=None):
             seen.update(ids=ids, suction=suction, water=water)
-            super().clean_rooms(ids, suction, water)
+            super().clean_rooms(ids, suction, water, rooms)
 
     ctl, _, _ = make(parts, vacuum=Spy())
     ctl.start()
     ctl.clean_rooms([2, 1])
     assert seen == {"ids": [2, 1], "suction": "standard", "water": "medium"}
+
+
+class RoomsSpy(FakeVacuum):
+    def __init__(self, room_settings):
+        super().__init__()
+        self.room_settings = room_settings
+        self.calls = []
+
+    def poll(self):
+        return replace(super().poll(), room_settings=self.room_settings)
+
+    def clean_rooms(self, ids, suction, water, rooms=None):
+        self.calls.append((ids, suction, water, rooms))
+        super().clean_rooms(ids, suction, water, rooms)
+
+
+# the robot's stored settings: room 2 strong, high mopping, two passes; room 1 the defaults
+CLEANSET = {"2": [2, 3, 2, 1, -1], "1": [1, 2, 1, 2, -1]}
+
+
+def test_clean_rooms_sends_stored_room_settings_when_they_are_on(parts):
+    vac = RoomsSpy(True)
+    ctl, _, _ = make(parts, vacuum=vac, fetch_cleanset=lambda: CLEANSET)
+    ctl.start()
+    done = []
+    ctl.clean_rooms([2, 1], on_done=done.append)
+    assert done == [None]
+    ids, suction, water, rooms = vac.calls[0]
+    assert (ids, suction, water) == ([2, 1], "standard", "medium")
+    assert rooms[2] == RoomSetting("strong", "high", 2)
+    assert rooms[1] == RoomSetting("standard", "medium", 1)
+
+
+def test_clean_rooms_ignores_stored_settings_when_they_are_off(parts):
+    vac = RoomsSpy(False)
+    fetched = []
+
+    def fetch():
+        fetched.append(1)
+        return CLEANSET
+
+    ctl, _, _ = make(parts, vacuum=vac, fetch_cleanset=fetch)
+    ctl.start()
+    ctl.clean_rooms([2])
+    assert vac.calls == [([2], "standard", "medium", None)] and not fetched
+
+
+@pytest.mark.parametrize("answer", ["unreadable", None, RuntimeError("cloud down")])
+def test_clean_rooms_still_starts_when_stored_settings_cant_be_read(parts, answer):
+    vac = RoomsSpy(True)
+
+    def fetch():
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    ctl, _, events = make(parts, vacuum=vac, fetch_cleanset=fetch)
+    ctl.start()
+    done = []
+    ctl.clean_rooms([2], on_done=done.append)
+    assert done == [None] and vac.calls == [([2], "standard", "medium", None)]
+    assert ctl.snapshot.state == "cleaning"
+    assert not [e for e in events if isinstance(e, tuple) and e[0] == "action-failed"]
+
+
+def test_clean_rooms_after_stop_reports_without_starting(parts):
+    vac = RoomsSpy(True)
+    ctl, _, _ = make(parts, vacuum=vac, fetch_cleanset=lambda: CLEANSET)
+    ctl.start()
+    ctl.stop()
+    done = []
+    ctl.clean_rooms([2], on_done=done.append)
+    assert len(done) == 1 and isinstance(done[0], RuntimeError) and not vac.calls
 
 
 def test_finished_notification(parts):

@@ -82,10 +82,11 @@ class Vacuum:
     def set_water(self, name: str) -> None:
         self._set(*self._profile.props["water"], name_to_value(self._profile.water, name))
 
-    def clean_rooms(self, ids: list[int], suction: str, water: str) -> None:
+    def clean_rooms(self, ids: list[int], suction: str, water: str, rooms=None) -> None:
+        """`rooms`: {room id: RoomSetting}, the robot's own settings to clean rooms with."""
         if not ids:
             raise DeviceError("no rooms selected")
-        params = self._profile.room_clean_params(ids, suction, water)
+        params = self._profile.room_clean_params(ids, suction, water, rooms)
         self._action(*self._profile.actions["clean"], params)
 
     def request_map_object(self) -> str:

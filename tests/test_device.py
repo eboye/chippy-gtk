@@ -242,3 +242,19 @@ def test_connect_can_move():
 def test_move_to_needs_a_way_to_open_the_device():
     with pytest.raises(DeviceError):
         Vacuum(RecordingDev(), R2209).move_to("10.0.0.9")
+
+
+def test_clean_rooms_sends_each_rooms_own_settings():
+    from chippy.core.mapedit import RoomSetting
+
+    dev = RecordingDev()
+    rooms = {16: RoomSetting("strong", "medium", 2), 18: RoomSetting("quiet", "low", 3)}
+    Vacuum(dev, R2209).clean_rooms([16, 18, 20], "standard", "high", rooms)
+    params = dev.calls[0][3]
+    assert json.loads(params[1]["value"]) == {
+        "selects": [
+            [16, 2, 2, 2, 1],  # passes, suction and mopping from room 16's own settings
+            [18, 3, 0, 1, 2],
+            [20, 1, 1, 3, 3],  # no stored settings: the general ones, one pass
+        ]
+    }

@@ -1,6 +1,7 @@
 """Everything model-specific. Nothing outside this module knows a siid/piid."""
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 
 from .state import Snapshot, name_to_value
@@ -83,10 +84,25 @@ class Profile:
             room_settings=(values["room_settings"] == 1) if "room_settings" in values else None,
         )
 
-    def room_clean_params(self, ids: list[int], suction: str, water: str) -> list[dict]:
-        s_val = name_to_value(self.suction, suction)
-        w_val = name_to_value(self.water, water)
-        selects = [[int(seg), 1, s_val, w_val, order] for order, seg in enumerate(ids, start=1)]
+    def room_clean_params(
+        self, ids: list[int], suction: str, water: str, rooms: Mapping | None = None
+    ) -> list[dict]:
+        """Each room is cleaned with its entry in `rooms` (an object with `passes`,
+        `suction` and `water`, like mapedit.RoomSetting) when it has one, else once with the
+        general `suction` and `water`."""
+        selects = []
+        for order, seg in enumerate(ids, start=1):
+            own = (rooms or {}).get(int(seg))
+            passes, fan, wet = (own.passes, own.suction, own.water) if own else (1, suction, water)
+            selects.append(
+                [
+                    int(seg),
+                    max(1, int(passes)),
+                    name_to_value(self.suction, fan),
+                    name_to_value(self.water, wet),
+                    order,
+                ]
+            )
         payload = json.dumps({"selects": selects}, separators=(",", ":"))
         return [{"piid": 1, "value": self.segment_clean_mode}, {"piid": 10, "value": payload}]
 
