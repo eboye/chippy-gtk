@@ -30,6 +30,11 @@ _ZONE_COLOR = {"no_go": "#e01b24", "no_mop": "#3584e4", "wall": "#e01b24"}
 _ZONE_TOOLS = ("select", "no_go", "no_mop", "wall")  # tools that show and edit zones
 HATCH_SPACING = 8  # px between a zone's diagonal stripes, whatever the zoom
 _DELETE_KEYS = (Gdk.KEY_Delete, Gdk.KEY_KP_Delete, Gdk.KEY_BackSpace)
+# Animation lengths (ms). Adwaita skips them when animations are off or the map is hidden.
+MAP_FADE_MS = 300  # a map appearing
+SELECT_FADE_MS = 180  # rooms and labels changing colour on (de)selection
+ROBOT_GLIDE_MS = 1000  # the robot driving to its next live position
+RESET_VIEW_MS = 250  # double click: back to the whole map
 
 
 def _zone_list(zones: MapZones, kind: str) -> tuple:
@@ -56,6 +61,24 @@ def _rgba(spec: str) -> Gdk.RGBA:
     color = Gdk.RGBA()
     color.parse(spec)
     return color
+
+
+def _mix_rgba(a: Gdk.RGBA, b: Gdk.RGBA, t: float) -> Gdk.RGBA:
+    out = Gdk.RGBA()
+    out.red = a.red + (b.red - a.red) * t
+    out.green = a.green + (b.green - a.green) * t
+    out.blue = a.blue + (b.blue - a.blue) * t
+    out.alpha = a.alpha + (b.alpha - a.alpha) * t
+    return out
+
+
+def _lerp(a: float, b: float, t: float) -> float:
+    return a + (b - a) * t
+
+
+def _turn(a: float, b: float, t: float) -> float:
+    """Angle (degrees) a turned towards b the short way round, by fraction t."""
+    return a + (((b - a + 180) % 360) - 180) * t
 
 
 def _rounded(box: Graphene.Rect, radius: float) -> Gsk.RoundedRect:
@@ -102,6 +125,14 @@ class MapView(Gtk.Widget):
         self._edit: tuple[str, int, str] | None = None  # zone part grabbed by a select drag
         self._draft: MapZones | None = None  # zones while a move/resize is in progress
         self._preview: tuple[tuple[float, float], tuple[float, float]] | None = None  # cells
+        # Animations: each value runs 0 -> 1; the animation objects are kept alive here.
+        self._anims: dict[str, Adw.TimedAnimation] = {}
+        self._map_alpha = 1.0
+        self._fade_texture = None  # the rooms texture before a selection change, fading out
+        self._fade_rooms: set[int] = set()  # rooms whose selection changed
+        self._fade_t = 1.0
+        self._glide = None  # (x, y, angle, path) the robot was drawn at when it last moved
+        self._glide_t = 1.0
 
         click = Gtk.GestureClick()
         click.connect("released", self._on_click)
@@ -136,26 +167,120 @@ class MapView(Gtk.Widget):
             or self.grid is None
             or (grid.width, grid.height) != (self.grid.width, self.grid.height)
         )
+        appearing = self.grid is None and grid is not None
         self.grid, self.rooms = grid, list(rooms)
         if grid is not None and size_changed:
+            self._stop("view")
             self.viewport = Viewport(grid.width, grid.height)
             self.viewport.resize(self.get_width(), self.get_height())
         if grid is None:
             self.viewport = None
+        self._end_select_fade()
         self._invalidate()
+        if appearing:
+            self._animate("map", MAP_FADE_MS, lambda t: setattr(self, "_map_alpha", t))
 
     def set_rooms(self, rooms) -> None:
         self.rooms = list(rooms)
         self._invalidate()
 
     def set_selection(self, selected: set[int]) -> None:
-        self.selected = set(selected)
+        """Changed rooms and their labels cross-fade to their new colours."""
+        selected = set(selected)
+        if selected == self.selected:
+            return
+        old = self._texture
+        self._fade_rooms = selected ^ self.selected
+        self.selected = selected
         self._invalidate()
+        if old is not None:
+            self._fade_texture = old
+            self._animate(
+                "select",
+                SELECT_FADE_MS,
+                lambda t: setattr(self, "_fade_t", t),
+                self._end_select_fade,
+            )
+
+    def _end_select_fade(self) -> None:
+        self._stop("select")
+        self._fade_texture, self._fade_rooms, self._fade_t = None, set(), 1.0
 
     def set_live(self, live) -> None:
-        """Robot position and path changed: redraw only, the rooms texture stays."""
+        """Robot position and path changed: redraw only, the rooms texture stays. A robot
+        that moved drives there from where it was drawn instead of jumping."""
+        if live is self.live:
+            self.queue_draw()  # a map refresh passing the same state on: keep driving
+            return
+        pose = self._robot_pose()
+        old = self.live
         self.live = live
+        self._stop("robot")
+        self._glide, self._glide_t = None, 1.0
+        if pose is not None and live is not None and live.robot is not None:
+            if (pose[0], pose[1], pose[2]) != (*live.robot, live.angle):
+                path = self._shown_path(old)
+                self._glide = (*pose, path if len(live.path) >= len(path) else None)
+                self._glide_t = 0.0
+                self._animate(
+                    "robot",
+                    ROBOT_GLIDE_MS,
+                    lambda t: setattr(self, "_glide_t", t),
+                    easing=Adw.Easing.EASE_IN_OUT_CUBIC,
+                )
         self.queue_draw()
+
+    def _robot_pose(self) -> tuple[float, float, float] | None:
+        """Where the robot is drawn now: (x, y) in cells and its heading."""
+        live = self.live
+        if live is None or live.robot is None:
+            return None
+        if self._glide is None:
+            return (*live.robot, live.angle)
+        x, y, angle, _path = self._glide
+        t = self._glide_t
+        return (
+            _lerp(x, live.robot[0], t),
+            _lerp(y, live.robot[1], t),
+            _turn(angle, live.angle, t),
+        )
+
+    def _shown_path(self, live) -> list[tuple[float, float]]:
+        """The path as drawn: while the robot drives on, the old path up to the robot."""
+        if live is None:
+            return []
+        if self._glide is not None and self._glide[3] is not None and self._glide_t < 1:
+            pose = self._robot_pose()
+            return [*self._glide[3], (pose[0], pose[1])]
+        return list(live.path)
+
+    def _animate(self, key, ms, step, done=None, easing=Adw.Easing.EASE_OUT_CUBIC) -> None:
+        """Run step(t) for t from 0 to 1 over `ms`, redrawing each frame; done() at the end.
+        Skipped straight to the end when animations are off or the map isn't shown."""
+        self._stop(key)
+
+        def frame(value) -> None:
+            step(value)
+            self.queue_draw()
+
+        anim = Adw.TimedAnimation.new(self, 0.0, 1.0, ms, Adw.CallbackAnimationTarget.new(frame))
+        anim.set_easing(easing)
+
+        def finished(_anim) -> None:
+            if self._anims.get(key) is anim:
+                del self._anims[key]
+            if done is not None:
+                done()
+
+        anim.connect("done", finished)
+        self._anims[key] = anim
+        anim.play()
+
+    def _stop(self, key) -> None:
+        """Drop an animation where it is, without its last frame or done()."""
+        anim = self._anims.pop(key, None)
+        if anim is not None:
+            anim.pause()
 
     def set_zones(self, zones: MapZones, geom: MapGeometry | None) -> None:
         """Programmatic: emits nothing. The zone selection survives only an echo of the same
@@ -199,9 +324,23 @@ class MapView(Gtk.Widget):
         return {seg: n for n, seg in enumerate((s for s in self.order if s in shown), 1)}
 
     def reset_view(self) -> None:
-        if self.viewport:
-            self.viewport.fit()
-            self.queue_draw()
+        """Back to the whole map, zooming and panning there smoothly."""
+        vp = self.viewport
+        if not vp:
+            return
+        start = (vp.scale, vp.ox, vp.oy)
+        vp.fit()
+        end = (vp.scale, vp.ox, vp.oy)
+        self.queue_draw()
+        if start == end:
+            return
+        vp.scale, vp.ox, vp.oy = start
+
+        def step(t) -> None:
+            vp.scale, vp.ox, vp.oy = (_lerp(a, b, t) for a, b in zip(start, end, strict=True))
+            vp.fitted = False
+
+        self._animate("view", RESET_VIEW_MS, step, vp.fit)
 
     def room_at(self, x: float, y: float) -> int:
         if not (self.grid and self.viewport):
@@ -260,6 +399,7 @@ class MapView(Gtk.Widget):
             x, y = self._pointer
         else:
             x, y = self.get_width() / 2, self.get_height() / 2
+        self._stop("view")
         self.viewport.zoom_at(factor, x, y)
         self.queue_draw()
         return True
@@ -339,6 +479,7 @@ class MapView(Gtk.Widget):
             self._dragged = True
             if gesture is not None:
                 gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+            self._stop("view")
             self.viewport.ox, self.viewport.oy = self._drag_origin
             self.viewport.pan(dx, dy)
             self.queue_draw()
@@ -423,6 +564,7 @@ class MapView(Gtk.Widget):
             return
         ok, x, y = gesture.get_bounding_box_center()
         if ok:
+            self._stop("view")
             self.viewport.zoom_at(scale / self._zoom_origin, x, y)
             self._zoom_origin = scale
             self.queue_draw()
@@ -448,12 +590,19 @@ class MapView(Gtk.Widget):
     def do_snapshot(self, snapshot) -> None:
         if not (self.grid and self.viewport):
             return
+        fading_in = self._map_alpha < 1
+        if fading_in:
+            snapshot.push_opacity(self._map_alpha)
         self._ensure_texture()
         vp = self.viewport
         rect = Graphene.Rect().init(
             vp.ox, vp.oy, self.grid.width * vp.scale, self.grid.height * vp.scale
         )
         snapshot.append_scaled_texture(self._texture, Gsk.ScalingFilter.NEAREST, rect)
+        if self._fade_texture is not None and self._fade_t < 1:
+            snapshot.push_opacity(1 - self._fade_t)
+            snapshot.append_scaled_texture(self._fade_texture, Gsk.ScalingFilter.NEAREST, rect)
+            snapshot.pop()
         if self.geom is not None:
             self._zones(snapshot)
         if self.grid.charger:
@@ -463,6 +612,8 @@ class MapView(Gtk.Widget):
         self._labels(snapshot)
         if self.live is not None and self.live.robot is not None:
             self._robot(snapshot)  # on top: a label must never hide the robot
+        if fading_in:
+            snapshot.pop()
 
     def _widget_mm(self, x_mm, y_mm) -> tuple[float, float]:
         return self.viewport.to_widget(*self.geom.to_cell(x_mm, y_mm))
@@ -559,7 +710,7 @@ class MapView(Gtk.Widget):
             snapshot.pop()
 
     def _live_path(self, snapshot) -> None:
-        vp, points = self.viewport, self.live.path
+        vp, points = self.viewport, self._shown_path(self.live)
         if len(points) < 2:
             return
         builder = Gsk.PathBuilder.new()
@@ -575,12 +726,12 @@ class MapView(Gtk.Widget):
         snapshot.append_stroke(path, stroke, color)
 
     def _robot(self, snapshot) -> None:
-        live = self.live
-        x, y = self.viewport.to_widget(*live.robot)
+        cx, cy, angle = self._robot_pose()
+        x, y = self.viewport.to_widget(cx, cy)
         accent = Adw.StyleManager.get_default().get_accent_color_rgba()
         # Heading: map angles have y up, the widget has y down, hence (cos a, -sin a). Drawn
         # under the dot, so what shows is an accent pointer with a white outline sticking out.
-        a = math.radians(live.angle)
+        a = math.radians(angle)
         builder = Gsk.PathBuilder.new()
         builder.move_to(x, y)
         builder.line_to(x + HEADING_LENGTH * math.cos(a), y - HEADING_LENGTH * math.sin(a))
@@ -606,12 +757,15 @@ class MapView(Gtk.Widget):
             layout.set_alignment(Pango.Alignment.CENTER)
             w, h = layout.get_pixel_size()
             box = Graphene.Rect().init(x - w / 2 - 10, y - h / 2 - 5, w + 20, h + 10)
-            if selected:
-                bg, fg = accent, _rgba("#ffffff")
-            elif dark:
-                bg, fg = _rgba("rgba(48,48,52,0.92)"), _rgba("#ffffff")
+            if dark:
+                plain = _rgba("rgba(48,48,52,0.92)"), _rgba("#ffffff")
             else:
-                bg, fg = _rgba("rgba(255,255,255,0.94)"), _rgba("rgba(0,0,0,0.8)")
+                plain = _rgba("rgba(255,255,255,0.94)"), _rgba("rgba(0,0,0,0.8)")
+            picked = accent, _rgba("#ffffff")
+            bg, fg = picked if selected else plain
+            if seg in self._fade_rooms and self._fade_t < 1:
+                (old_bg, old_fg), t = (plain if selected else picked), self._fade_t
+                bg, fg = _mix_rgba(old_bg, bg, t), _mix_rgba(old_fg, fg, t)
             snapshot.push_rounded_clip(_rounded(box, 10))
             snapshot.append_color(bg, box)
             snapshot.pop()

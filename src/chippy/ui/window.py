@@ -32,6 +32,7 @@ from .sidebar import Sidebar  # noqa: E402
 _BIDIRECTIONAL = GObject.BindingFlags.BIDIRECTIONAL | GObject.BindingFlags.SYNC_CREATE
 
 
+SIDE_TRANSITION_MS = 200  # sidebar cross-fade and edit toolbar slide, entering or leaving edit
 CLOUD_EXPIRED = "Xiaomi sign-in expired — map updates are paused"
 BROWSE_HINT = "Click rooms to select them · scroll to zoom · double-click to fit"
 # (tool, name, icon, hint) for the map toolbar in edit mode
@@ -81,7 +82,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._toggling = False  # setting the Edit toggle from code
         self._could_edit = False
         self.toasts = Adw.ToastOverlay()
-        self.stack = Adw.ViewStack()
+        self.stack = Adw.ViewStack(enable_transitions=True)  # cross-fades between pages
         self.toasts.set_child(self.stack)
         self.set_content(self.toasts)
 
@@ -157,7 +158,15 @@ class MainWindow(Adw.ApplicationWindow):
         )
         overlay = Gtk.Overlay(child=self.map_view, vexpand=True)
         overlay.add_overlay(self.map_status)
-        overlay.add_overlay(self._build_toolbar())
+        # edit tools slide down over the map when edit mode starts
+        self.toolbar_revealer = Gtk.Revealer(
+            child=self._build_toolbar(),
+            transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN,
+            transition_duration=SIDE_TRANSITION_MS,
+            halign=Gtk.Align.START,
+            valign=Gtk.Align.START,
+        )
+        overlay.add_overlay(self.toolbar_revealer)
         self.map_view.connect("zones-edited", lambda _v, zones: self.edit_panel.set_zones(zones))
         self.map_view.connect(
             "zone-selected",
@@ -201,10 +210,18 @@ class MainWindow(Adw.ApplicationWindow):
         self.edit_panel.connect("changed", lambda *_a: self._edit_changed())
         self.edit_panel.connect("leave", lambda *_a: self._leave_edit())
         self.edit_panel.connect("save", lambda *_a: self._save_edit())
-        self.side_stack = Gtk.Stack(vhomogeneous=False)
+        self.side_stack = Gtk.Stack(
+            vhomogeneous=False,
+            transition_type=Gtk.StackTransitionType.CROSSFADE,
+            transition_duration=SIDE_TRANSITION_MS,
+        )
         self.side_stack.add_named(self.sidebar, "controls")
         self.side_stack.add_named(self.edit_panel, "edit")
-        self.side_actions = Gtk.Stack(vhomogeneous=False)
+        self.side_actions = Gtk.Stack(
+            vhomogeneous=False,
+            transition_type=Gtk.StackTransitionType.CROSSFADE,
+            transition_duration=SIDE_TRANSITION_MS,
+        )
         self.side_actions.add_named(self.sidebar.build_actions(), "controls")
         self.side_actions.add_named(self.edit_panel.build_actions(), "edit")
         scroller = Gtk.ScrolledWindow(
@@ -360,6 +377,8 @@ class MainWindow(Adw.ApplicationWindow):
             valign=Gtk.Align.START,
             margin_top=12,
             margin_start=12,
+            margin_end=12,
+            margin_bottom=12,  # room for the buttons' shadow while the revealer clips
             visible=False,
         )
         self.tool_buttons: dict[str, Gtk.ToggleButton] = {}
@@ -404,6 +423,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.side_stack.set_visible_child_name("edit")
         self.side_actions.set_visible_child_name("edit")
         self.toolbar.set_visible(True)
+        self.toolbar_revealer.set_reveal_child(True)
         for button in self.tool_buttons.values():
             mark_unsupported(button, False, default=button.chippy_name)
         self._choose_tool("select")
@@ -444,7 +464,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._set_toggle(False)
         self.side_stack.set_visible_child_name("controls")
         self.side_actions.set_visible_child_name("controls")
-        self.toolbar.set_visible(False)
+        self.toolbar_revealer.set_reveal_child(False)  # hides the toolbar once slid away
         self.map_view.set_tool(None)
         self.map_view.set_zones_editable(True)
         self.map_view.set_sensitive(True)
@@ -765,5 +785,9 @@ class MainWindow(Adw.ApplicationWindow):
                 list(self._ctl.live.robot)
                 if self._ctl and self._ctl.live and self._ctl.live.robot
                 else None
+            ),
+            # where the map draws the robot: behind live_robot while it drives there
+            "robot_drawn": (
+                list(pose[:2]) if (pose := self.map_view._robot_pose()) is not None else None
             ),
         }

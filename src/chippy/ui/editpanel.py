@@ -108,7 +108,9 @@ class EditPanel(Gtk.Box):
         self._allowed = True
         self._updating = False
 
-        self.content_stack = Gtk.Stack(vexpand=True)
+        self.content_stack = Gtk.Stack(
+            vexpand=True, transition_type=Gtk.StackTransitionType.CROSSFADE
+        )
         loading = Gtk.Box(valign=Gtk.Align.CENTER, halign=Gtk.Align.CENTER, vexpand=True)
         loading.append(Adw.Spinner(width_request=32, height_request=32))
         self.content_stack.add_named(loading, "loading")

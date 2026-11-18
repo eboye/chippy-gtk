@@ -489,3 +489,71 @@ def test_previews_and_badges_are_drawn():
     )
     view, _events = _edit_view("select", MapZones(no_go=(FREE,)), None)
     assert _render(view)(*_at(view, 2900, 1000)) == plain(*_at(view, 2900, 1000))
+
+
+# Animations. The views here are never shown, so Adwaita skips each one to its end at
+# once; mid-animation states are set by hand.
+
+
+def test_animations_on_a_hidden_map_finish_at_once():
+    from chippy.mapmodel import LiveState
+
+    view = _view()
+    assert view._map_alpha == 1.0 and view._anims == {}
+    view._ensure_texture()
+    view.set_selection({1})
+    assert view._fade_texture is None and view._fade_t == 1.0 and view._anims == {}
+    view.set_live(LiveState(robot=(20.5, 4.5), angle=90.0, path=[(20.5, 4.5)]))
+    view.set_live(LiveState(robot=(22.5, 4.5), angle=0.0, path=[(20.5, 4.5), (22.5, 4.5)]))
+    assert view._robot_pose() == (22.5, 4.5, 0.0)
+    assert view._shown_path(view.live) == [(20.5, 4.5), (22.5, 4.5)]
+    view.viewport.zoom_at(2.0, 420, 210)
+    view.reset_view()
+    assert view.viewport.fitted
+    assert view.viewport.scale == pytest.approx(view.viewport.fit_scale())
+
+
+def test_same_selection_keeps_the_texture():
+    view = _view()
+    view.set_selection({1})
+    view._ensure_texture()
+    texture = view._texture
+    view.set_selection({1})
+    assert view._texture is texture
+
+
+def test_robot_glides_from_where_it_was_drawn():
+    from chippy.mapmodel import LiveState
+    from chippy.ui.mapview import _turn
+
+    view = _view()
+    view.set_live(LiveState(robot=(20.5, 4.5), angle=170.0, path=[(20.5, 4.5)]))
+    path = [(20.5, 4.5), (24.5, 6.5)]
+    view.live = LiveState(robot=(24.5, 6.5), angle=-170.0, path=path)
+    view._glide, view._glide_t = (20.5, 4.5, 170.0, [(20.5, 4.5)]), 0.5
+    x, y, angle = view._robot_pose()
+    assert (x, y) == (22.5, 5.5)
+    assert angle % 360 == pytest.approx(180.0)  # turned the short way, through 180
+    # the old path, then a line to where the robot is now; the new path once it arrives
+    assert view._shown_path(view.live) == [(20.5, 4.5), (22.5, 5.5)]
+    view._glide_t = 1.0
+    assert view._shown_path(view.live) == path
+    assert _turn(350, 10, 0.5) % 360 == pytest.approx(0.0)
+    assert _turn(10, 350, 0.5) % 360 == pytest.approx(0.0)
+
+
+def test_selection_fade_blends_the_old_rooms_texture_over_the_new():
+    view = _view()
+    view._ensure_texture()
+    before = _render(view)
+    x, y = view.viewport.to_widget(32.5, 6.5)  # room 1, away from its label
+    old = view._texture
+    view.set_selection({1})
+    after = _render(view)
+    assert before(x, y) != after(x, y)
+    view._fade_texture, view._fade_rooms, view._fade_t = old, {1}, 0.5
+    halfway = _render(view)(x, y)
+    for channel in range(3):
+        lo, hi = sorted((before(x, y)[channel], after(x, y)[channel]))
+        assert lo <= halfway[channel] <= hi
+    assert halfway != before(x, y) and halfway != after(x, y)

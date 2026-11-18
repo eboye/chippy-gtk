@@ -608,6 +608,20 @@ export default class ChippyProbe extends Extension {
             6000);
         this._check('live-robot-moves', moved,
             `first=${JSON.stringify(first)} now=${JSON.stringify(robot())}`);
+        // The map drives the robot to each new position instead of jumping: some state
+        // snapshots catch it drawn between positions, and it ends up where the robot is.
+        const drawn = () => this._state()?.robot_drawn ?? null;
+        let between = 0;
+        for (let t = 0; t < 12000; t += 100) {
+            const live = robot(), shown = drawn();
+            if (live && shown && JSON.stringify(live) !== JSON.stringify(shown))
+                between++;
+            await this._sleep(100);
+        }
+        const arrived = await this._waitFor(
+            () => JSON.stringify(robot()) === JSON.stringify(drawn()), 3000);
+        this._check('robot-glides', between > 0 && arrived,
+            `between=${between} live=${JSON.stringify(robot())} drawn=${JSON.stringify(drawn())}`);
         await this._shot('cleaning');
 
         const ind = Main.panel.statusArea[TARGET_UUID];
