@@ -1,6 +1,6 @@
 [project]
 name = "chippy"
-version = "0.1.5"
+version = "0.1.6"
 description = "Standalone GNOME app for Dreame robot vacuums"
 requires-python = ">=3.13"
 dependencies = [
