@@ -513,6 +513,28 @@ def test_animations_on_a_hidden_map_finish_at_once():
     assert view.viewport.scale == pytest.approx(view.viewport.fit_scale())
 
 
+def test_double_click_switches_its_room_back_without_a_fade():
+    view = _view()
+    view.connect(
+        "room-clicked",
+        lambda _v, seg: view.set_selection(view.selected ^ {seg}),
+    )
+    fades = []
+    animate = view._animate
+    view._animate = lambda key, *a, **k: (fades.append(key), animate(key, *a, **k))
+    view._ensure_texture()
+    x, y = view.viewport.to_widget(20.5, 4.5)
+    view._on_click(None, 1, x, y)
+    assert view.selected == {1} and fades == ["select"]
+    view._ensure_texture()
+    view._on_click(None, 2, x, y)
+    assert view.selected == set() and fades.count("select") == 1  # the undo snaps back
+    assert view._fade_texture is None and not view._snap_selection
+    view._ensure_texture()
+    view._on_click(None, 1, x, y)  # later single clicks fade again
+    assert fades.count("select") == 2
+
+
 def test_same_selection_keeps_the_texture():
     view = _view()
     view.set_selection({1})

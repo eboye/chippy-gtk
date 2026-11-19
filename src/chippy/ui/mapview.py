@@ -131,6 +131,7 @@ class MapView(Gtk.Widget):
         self._fade_texture = None  # the rooms texture before a selection change, fading out
         self._fade_rooms: set[int] = set()  # rooms whose selection changed
         self._fade_t = 1.0
+        self._snap_selection = False  # set while a double click undoes its first toggle
         self._glide = None  # (x, y, angle, path) the robot was drawn at when it last moved
         self._glide_t = 1.0
 
@@ -185,15 +186,17 @@ class MapView(Gtk.Widget):
         self._invalidate()
 
     def set_selection(self, selected: set[int]) -> None:
-        """Changed rooms and their labels cross-fade to their new colours."""
+        """Changed rooms and their labels cross-fade to their new colours (switching at
+        once when a double click toggles a room back)."""
         selected = set(selected)
         if selected == self.selected:
             return
         old = self._texture
+        self._end_select_fade()
         self._fade_rooms = selected ^ self.selected
         self.selected = selected
         self._invalidate()
-        if old is not None:
+        if old is not None and not self._snap_selection:
             self._fade_texture = old
             self._animate(
                 "select",
@@ -376,7 +379,12 @@ class MapView(Gtk.Widget):
             # pointer; toggle it back so fitting the view leaves the selection alone.
             seg, self._click_seg = self._click_seg, 0
             if seg:
-                self.emit("room-clicked", seg)
+                # undoing a toggle the user never meant: switch back at once, no fade
+                self._snap_selection = True
+                try:
+                    self.emit("room-clicked", seg)
+                finally:
+                    self._snap_selection = False
             self.reset_view()
             return
         self._click_seg = 0
